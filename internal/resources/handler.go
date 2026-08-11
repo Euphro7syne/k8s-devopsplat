@@ -18,31 +18,33 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) Register(r gin.IRoutes, readMiddleware ...gin.HandlerFunc) {
-	mw := append([]gin.HandlerFunc{}, readMiddleware...)
+func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware gin.HandlerFunc) {
+	readMW := []gin.HandlerFunc{readMiddleware}
+	writeMW := []gin.HandlerFunc{writeMiddleware}
 
-	r.GET("/overview", append(mw, h.overview)...)
-	r.GET("/namespaces", append(mw, h.namespaces)...)
-	r.GET("/nodes", append(mw, h.nodes)...)
-	r.GET("/resources/yaml", append(mw, h.resourceYAML)...)
-	r.GET("/namespaces/:namespace/pods", append(mw, h.pods)...)
-	r.GET("/namespaces/:namespace/pods/:pod", append(mw, h.pod)...)
-	r.GET("/namespaces/:namespace/pods/:pod/yaml", append(mw, h.podYAML)...)
-	r.GET("/namespaces/:namespace/events", append(mw, h.events)...)
-	r.GET("/namespaces/:namespace/deployments", append(mw, h.deployments)...)
-	r.GET("/namespaces/:namespace/deployments/:name", append(mw, h.deployment)...)
-	r.GET("/namespaces/:namespace/deployments/:name/yaml", append(mw, h.deploymentYAML)...)
-	r.GET("/namespaces/:namespace/statefulsets", append(mw, h.statefulSets)...)
-	r.GET("/namespaces/:namespace/daemonsets", append(mw, h.daemonSets)...)
-	r.GET("/namespaces/:namespace/replicasets", append(mw, h.replicaSets)...)
-	r.GET("/namespaces/:namespace/jobs", append(mw, h.jobs)...)
-	r.GET("/namespaces/:namespace/cronjobs", append(mw, h.cronJobs)...)
-	r.GET("/namespaces/:namespace/services", append(mw, h.services)...)
-	r.GET("/namespaces/:namespace/ingresses", append(mw, h.ingresses)...)
-	r.GET("/namespaces/:namespace/configmaps", append(mw, h.configMaps)...)
-	r.GET("/namespaces/:namespace/persistentvolumeclaims", append(mw, h.pvcs)...)
-	r.GET("/persistentvolumes", append(mw, h.pvs)...)
-	r.GET("/storageclasses", append(mw, h.storageClasses)...)
+	r.GET("/overview", append(readMW, h.overview)...)
+	r.GET("/namespaces", append(readMW, h.namespaces)...)
+	r.GET("/nodes", append(readMW, h.nodes)...)
+	r.GET("/resources/yaml", append(readMW, h.resourceYAML)...)
+	r.PUT("/resources/yaml", append(writeMW, h.updateResourceYAML)...)
+	r.GET("/namespaces/:namespace/pods", append(readMW, h.pods)...)
+	r.GET("/namespaces/:namespace/pods/:pod", append(readMW, h.pod)...)
+	r.GET("/namespaces/:namespace/pods/:pod/yaml", append(readMW, h.podYAML)...)
+	r.GET("/namespaces/:namespace/events", append(readMW, h.events)...)
+	r.GET("/namespaces/:namespace/deployments", append(readMW, h.deployments)...)
+	r.GET("/namespaces/:namespace/deployments/:name", append(readMW, h.deployment)...)
+	r.GET("/namespaces/:namespace/deployments/:name/yaml", append(readMW, h.deploymentYAML)...)
+	r.GET("/namespaces/:namespace/statefulsets", append(readMW, h.statefulSets)...)
+	r.GET("/namespaces/:namespace/daemonsets", append(readMW, h.daemonSets)...)
+	r.GET("/namespaces/:namespace/replicasets", append(readMW, h.replicaSets)...)
+	r.GET("/namespaces/:namespace/jobs", append(readMW, h.jobs)...)
+	r.GET("/namespaces/:namespace/cronjobs", append(readMW, h.cronJobs)...)
+	r.GET("/namespaces/:namespace/services", append(readMW, h.services)...)
+	r.GET("/namespaces/:namespace/ingresses", append(readMW, h.ingresses)...)
+	r.GET("/namespaces/:namespace/configmaps", append(readMW, h.configMaps)...)
+	r.GET("/namespaces/:namespace/persistentvolumeclaims", append(readMW, h.pvcs)...)
+	r.GET("/persistentvolumes", append(readMW, h.pvs)...)
+	r.GET("/storageclasses", append(readMW, h.storageClasses)...)
 }
 
 func (h *Handler) overview(c *gin.Context) {
@@ -241,6 +243,20 @@ func (h *Handler) resourceYAML(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"yaml": result})
+}
+
+func (h *Handler) updateResourceYAML(c *gin.Context) {
+	var req ResourceYAMLUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid yaml update request", http.StatusBadRequest))
+		return
+	}
+	result, err := h.service.UpdateResourceYAML(c.Request.Context(), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 
 func parseListOptions(c *gin.Context) ListOptions {

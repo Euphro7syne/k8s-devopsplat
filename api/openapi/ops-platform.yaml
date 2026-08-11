@@ -135,6 +135,19 @@ paths:
       responses:
         "200":
           description: Resource YAML
+    put:
+      summary: Update Kubernetes resource from YAML
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceYAMLUpdateRequest"
+      responses:
+        "200":
+          description: Resource YAML updated
   /namespaces/{namespace}/pods:
     get:
       summary: List pods
@@ -531,6 +544,30 @@ components:
         password:
           type: string
           format: password
+    ResourceYAMLUpdateRequest:
+      type: object
+      required:
+        - kind
+        - namespace
+        - name
+        - yaml
+      properties:
+        kind:
+          type: string
+          enum:
+            - deployment
+            - statefulset
+            - daemonset
+            - job
+            - cronjob
+            - service
+            - ingress
+        namespace:
+          type: string
+        name:
+          type: string
+        yaml:
+          type: string
     Principal:
       type: object
       properties:

@@ -176,6 +176,22 @@ input {
   margin-bottom: 12px;
 }
 
+.yaml-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.yaml-editor .el-textarea__inner {
+  min-height: 60vh !important;
+  border-radius: 8px;
+  background: #111827;
+  color: #e5e7eb;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .log-view,
 .yaml-view {
   min-height: 60vh;

@@ -39,6 +39,7 @@ GET  /api/v1/overview
 GET  /api/v1/namespaces
 GET  /api/v1/nodes
 GET  /api/v1/resources/yaml?kind=&namespace=&name=
+PUT  /api/v1/resources/yaml
 GET  /api/v1/namespaces/{namespace}/pods
 GET  /api/v1/namespaces/{namespace}/pods/{pod}
 GET  /api/v1/namespaces/{namespace}/pods/{pod}/logs
@@ -65,4 +66,4 @@ GET  /api/v1/logs
 GET  /api/v1/audit/logs
 ```
 
-Secret 仍未纳入阶段 1 的通用列表与 YAML 导出。后续启用时必须保持列表脱敏、明文读取受角色控制，并同步 Kubernetes RBAC。
+YAML 更新仅开放 `deployment/statefulset/daemonset/job/cronjob/service/ingress`，由 `operator/admin` 调用并经过审计中间件。ConfigMap 仍必须走配置中心流程，Secret 仍未纳入阶段 1 的通用列表与 YAML 导出。后续启用 Secret 时必须保持列表脱敏、明文读取受角色控制，并同步 Kubernetes RBAC。

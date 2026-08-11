@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Delete, Refresh, Tickets, VideoPlay, View } from '@element-plus/icons-vue'
+import { Check, Delete, Refresh, Tickets, VideoPlay, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
@@ -24,6 +24,7 @@ import {
   listStorageClasses,
   restartDeployment,
   scaleDeployment,
+  updateResourceYAML,
   type ConfigMapSummary,
   type CronJobSummary,
   type DaemonSetSummary,
@@ -81,6 +82,10 @@ const logsVisible = ref(false)
 const yamlVisible = ref(false)
 const yamlText = ref('')
 const yamlTitle = ref('YAML')
+const yamlSaving = ref(false)
+const yamlKind = ref<ResourceKind | ''>('')
+const yamlName = ref('')
+const yamlNamespace = ref('')
 const selectedPod = ref<PodSummary | null>(null)
 const logResult = ref<LogResult | null>(null)
 const logQuery = reactive({
@@ -141,6 +146,16 @@ const pvcRows = computed(() => pvcs.value?.items ?? [])
 const pvRows = computed(() => pvs.value?.items ?? [])
 const storageClassRows = computed(() => storageClasses.value?.items ?? [])
 const nodeRows = computed(() => nodes.value?.items ?? [])
+const editableYAMLKinds = new Set<ResourceKind>([
+  'deployment',
+  'statefulset',
+  'daemonset',
+  'job',
+  'cronjob',
+  'service',
+  'ingress'
+])
+const yamlEditable = computed(() => yamlKind.value !== '' && editableYAMLKinds.has(yamlKind.value))
 const activeTotal = computed(() => {
   if (activeGroup.value === 'pods') return pods.value?.total ?? 0
   if (activeGroup.value === 'nodes') return nodes.value?.total ?? 0
@@ -281,10 +296,42 @@ async function showYAML(kind: ResourceKind, name: string, rowNamespace?: string)
   try {
     const result = await getResourceYAML(kind, name, rowNamespace)
     yamlTitle.value = rowNamespace ? `${kind}/${rowNamespace}/${name}` : `${kind}/${name}`
+    yamlKind.value = kind
+    yamlName.value = name
+    yamlNamespace.value = rowNamespace ?? ''
     yamlText.value = result.yaml
     yamlVisible.value = true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : 'YAML 加载失败')
+  }
+}
+
+async function reloadYAML() {
+  if (!yamlKind.value || !yamlName.value) {
+    return
+  }
+  await showYAML(yamlKind.value, yamlName.value, yamlNamespace.value || undefined)
+}
+
+async function saveYAML() {
+  if (!yamlEditable.value || !yamlKind.value || !yamlName.value || !yamlNamespace.value) {
+    return
+  }
+  await ElMessageBox.confirm(`保存 ${yamlTitle.value}`, '二次确认', {
+    confirmButtonText: '保存',
+    cancelButtonText: '取消',
+    type: 'warning'
+  })
+  yamlSaving.value = true
+  try {
+    const result = await updateResourceYAML(yamlKind.value, yamlName.value, yamlNamespace.value, yamlText.value)
+    yamlText.value = result.yaml
+    ElMessage.success('YAML 已保存')
+    await loadCurrent()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'YAML 保存失败')
+  } finally {
+    yamlSaving.value = false
   }
 }
 
@@ -727,7 +774,21 @@ onMounted(async () => {
     </el-drawer>
 
     <el-drawer v-model="yamlVisible" size="68%" :title="yamlTitle">
-      <pre class="yaml-view">{{ yamlText }}</pre>
+      <div class="drawer-toolbar yaml-toolbar">
+        <el-button :icon="Refresh" @click="reloadYAML">重载</el-button>
+        <el-button v-if="yamlEditable" :icon="Check" type="primary" :loading="yamlSaving" @click="saveYAML">
+          保存
+        </el-button>
+      </div>
+      <el-input
+        v-if="yamlEditable"
+        v-model="yamlText"
+        class="yaml-editor"
+        type="textarea"
+        :autosize="{ minRows: 24 }"
+        spellcheck="false"
+      />
+      <pre v-else class="yaml-view">{{ yamlText }}</pre>
     </el-drawer>
   </AppShell>
 </template>

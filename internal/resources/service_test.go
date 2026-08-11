@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/yaml"
 )
 
 func TestListPodsMarksAbnormalPod(t *testing.T) {
@@ -67,5 +68,92 @@ func TestListDeployments(t *testing.T) {
 	}
 	if result.Items[0].Images[0] != "example/api:v1" {
 		t.Fatalf("unexpected image: %s", result.Items[0].Images[0])
+	}
+}
+
+func TestUpdateResourceYAMLUpdatesDeployment(t *testing.T) {
+	initialReplicas := int32(1)
+	updatedReplicas := int32(3)
+	client := fake.NewSimpleClientset(
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "default"},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &initialReplicas,
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "api", Image: "example/api:v1"}},
+					},
+				},
+			},
+		},
+	)
+	service := NewService(client, "test")
+
+	raw, err := yaml.Marshal(&appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &updatedReplicas,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "api", Image: "example/api:v2"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal deployment yaml: %v", err)
+	}
+
+	result, err := service.UpdateResourceYAML(context.Background(), ResourceYAMLUpdateRequest{
+		Kind:      "deployment",
+		Namespace: "default",
+		Name:      "api",
+		YAML:      string(raw),
+	})
+	if err != nil {
+		t.Fatalf("update yaml: %v", err)
+	}
+	if result.Kind != "Deployment" || result.Operation != "update" {
+		t.Fatalf("unexpected update result: %#v", result)
+	}
+	deployment, err := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get updated deployment: %v", err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != updatedReplicas {
+		t.Fatalf("expected replicas %d, got %#v", updatedReplicas, deployment.Spec.Replicas)
+	}
+	if got := deployment.Spec.Template.Spec.Containers[0].Image; got != "example/api:v2" {
+		t.Fatalf("expected updated image, got %s", got)
+	}
+}
+
+func TestUpdateResourceYAMLRejectsConfigMap(t *testing.T) {
+	client := fake.NewSimpleClientset(
+		&corev1.ConfigMap{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+			ObjectMeta: metav1.ObjectMeta{Name: "app-config", Namespace: "default"},
+			Data:       map[string]string{"mode": "old"},
+		},
+	)
+	service := NewService(client, "test")
+	raw, err := yaml.Marshal(&corev1.ConfigMap{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{Name: "app-config", Namespace: "default"},
+		Data:       map[string]string{"mode": "new"},
+	})
+	if err != nil {
+		t.Fatalf("marshal configmap yaml: %v", err)
+	}
+
+	_, err = service.UpdateResourceYAML(context.Background(), ResourceYAMLUpdateRequest{
+		Kind:      "configmap",
+		Namespace: "default",
+		Name:      "app-config",
+		YAML:      string(raw),
+	})
+	if err == nil {
+		t.Fatalf("expected configmap yaml update to be rejected")
 	}
 }

@@ -38,8 +38,23 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources:
+      - daemonsets
       - deployments
-    verbs: ["update", "patch"]
+      - statefulsets
+    verbs: ["update"]
+  - apiGroups: ["batch"]
+    resources:
+      - cronjobs
+      - jobs
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources:
+      - services
+    verbs: ["update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["update"]
   - apiGroups: ["batch"]
     resources:
       - cronjobs

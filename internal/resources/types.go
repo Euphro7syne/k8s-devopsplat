@@ -208,3 +208,19 @@ type StorageClassSummary struct {
 	AllowVolumeExpansion bool      `json:"allow_volume_expansion"`
 	CreatedAt            time.Time `json:"created_at"`
 }
+
+type ResourceYAMLUpdateRequest struct {
+	Kind      string `json:"kind" binding:"required"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name" binding:"required"`
+	YAML      string `json:"yaml" binding:"required"`
+}
+
+type ResourceYAMLUpdateResult struct {
+	Kind      string    `json:"kind"`
+	Namespace string    `json:"namespace"`
+	Name      string    `json:"name"`
+	Operation string    `json:"operation"`
+	UpdatedAt time.Time `json:"updated_at"`
+	YAML      string    `json:"yaml"`
+}

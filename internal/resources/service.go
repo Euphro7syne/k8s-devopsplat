@@ -457,7 +457,7 @@ func (s *Service) ResourceYAML(ctx context.Context, kind, namespace, name string
 	if s.client == nil {
 		return "", unavailable()
 	}
-	kind = strings.ToLower(strings.TrimSpace(kind))
+	kind = normalizeResourceKind(kind)
 	name = strings.TrimSpace(name)
 	namespace = strings.TrimSpace(namespace)
 	if kind == "" || name == "" {
@@ -467,33 +467,33 @@ func (s *Service) ResourceYAML(ctx context.Context, kind, namespace, name string
 	var err error
 
 	switch kind {
-	case "node", "nodes":
+	case "node":
 		obj, err = s.client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-	case "pod", "pods":
+	case "pod":
 		obj, err = s.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "deployment", "deployments":
+	case "deployment":
 		obj, err = s.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "statefulset", "statefulsets":
+	case "statefulset":
 		obj, err = s.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "daemonset", "daemonsets":
+	case "daemonset":
 		obj, err = s.client.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "replicaset", "replicasets":
+	case "replicaset":
 		obj, err = s.client.AppsV1().ReplicaSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "job", "jobs":
+	case "job":
 		obj, err = s.client.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "cronjob", "cronjobs":
+	case "cronjob":
 		obj, err = s.client.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "service", "services":
+	case "service":
 		obj, err = s.client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "ingress", "ingresses":
+	case "ingress":
 		obj, err = s.client.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "configmap", "configmaps":
+	case "configmap":
 		obj, err = s.client.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "pvc", "persistentvolumeclaim", "persistentvolumeclaims":
+	case "pvc":
 		obj, err = s.client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
-	case "pv", "persistentvolume", "persistentvolumes":
+	case "pv":
 		obj, err = s.client.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
-	case "storageclass", "storageclasses":
+	case "storageclass":
 		obj, err = s.client.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
 	default:
 		return "", apperrors.New(apperrors.CodeInvalidArgument, fmt.Sprintf("unsupported resource kind %q", kind), http.StatusBadRequest)
@@ -501,6 +501,264 @@ func (s *Service) ResourceYAML(ctx context.Context, kind, namespace, name string
 	if err != nil {
 		return "", mapKubernetesError(err, "get resource yaml failed")
 	}
+	return marshalResourceYAML(obj)
+}
+
+func (s *Service) UpdateResourceYAML(ctx context.Context, req ResourceYAMLUpdateRequest) (ResourceYAMLUpdateResult, error) {
+	if s.client == nil {
+		return ResourceYAMLUpdateResult{}, unavailable()
+	}
+	kind := normalizeResourceKind(req.Kind)
+	namespace := strings.TrimSpace(req.Namespace)
+	name := strings.TrimSpace(req.Name)
+	rawYAML := strings.TrimSpace(req.YAML)
+	if kind == "" || name == "" || rawYAML == "" {
+		return ResourceYAMLUpdateResult{}, apperrors.New(apperrors.CodeInvalidArgument, "kind, name and yaml are required", http.StatusBadRequest)
+	}
+	if namespace == "" {
+		return ResourceYAMLUpdateResult{}, apperrors.New(apperrors.CodeInvalidArgument, "namespace is required for yaml update", http.StatusBadRequest)
+	}
+
+	var updated any
+	var err error
+	switch kind {
+	case "deployment":
+		var obj appsv1.Deployment
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("Deployment", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.AppsV1().Deployments(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "statefulset":
+		var obj appsv1.StatefulSet
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("StatefulSet", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.AppsV1().StatefulSets(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "daemonset":
+		var obj appsv1.DaemonSet
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("DaemonSet", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.AppsV1().DaemonSets(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "job":
+		var obj batchv1.Job
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("Job", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.BatchV1().Jobs(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "cronjob":
+		var obj batchv1.CronJob
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("CronJob", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.BatchV1().CronJobs(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "service":
+		var obj corev1.Service
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("Service", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.CoreV1().Services(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	case "ingress":
+		var obj networkingv1.Ingress
+		if err := decodeResourceYAML(rawYAML, &obj); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		if err := validateYAMLObject("Ingress", namespace, name, &obj.ObjectMeta, obj.Kind); err != nil {
+			return ResourceYAMLUpdateResult{}, err
+		}
+		updated, err = s.client.NetworkingV1().Ingresses(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
+	default:
+		return ResourceYAMLUpdateResult{}, apperrors.New(apperrors.CodeInvalidArgument, fmt.Sprintf("yaml update does not support resource kind %q", kind), http.StatusBadRequest)
+	}
+	if err != nil {
+		return ResourceYAMLUpdateResult{}, mapKubernetesError(err, "update resource yaml failed")
+	}
+	rendered, err := marshalResourceYAML(updated)
+	if err != nil {
+		return ResourceYAMLUpdateResult{}, err
+	}
+	return ResourceYAMLUpdateResult{
+		Kind:      resourceKindDisplay(kind),
+		Namespace: namespace,
+		Name:      name,
+		Operation: "update",
+		UpdatedAt: time.Now().UTC(),
+		YAML:      rendered,
+	}, nil
+}
+
+func normalizeResourceKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "node", "nodes":
+		return "node"
+	case "pod", "pods":
+		return "pod"
+	case "deployment", "deployments":
+		return "deployment"
+	case "statefulset", "statefulsets":
+		return "statefulset"
+	case "daemonset", "daemonsets":
+		return "daemonset"
+	case "replicaset", "replicasets":
+		return "replicaset"
+	case "job", "jobs":
+		return "job"
+	case "cronjob", "cronjobs":
+		return "cronjob"
+	case "service", "services":
+		return "service"
+	case "ingress", "ingresses":
+		return "ingress"
+	case "configmap", "configmaps":
+		return "configmap"
+	case "pvc", "persistentvolumeclaim", "persistentvolumeclaims":
+		return "pvc"
+	case "pv", "persistentvolume", "persistentvolumes":
+		return "pv"
+	case "storageclass", "storageclasses":
+		return "storageclass"
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func resourceKindDisplay(kind string) string {
+	switch kind {
+	case "deployment":
+		return "Deployment"
+	case "statefulset":
+		return "StatefulSet"
+	case "daemonset":
+		return "DaemonSet"
+	case "job":
+		return "Job"
+	case "cronjob":
+		return "CronJob"
+	case "service":
+		return "Service"
+	case "ingress":
+		return "Ingress"
+	default:
+		return kind
+	}
+}
+
+func decodeResourceYAML(raw string, obj any) error {
+	if err := yaml.Unmarshal([]byte(raw), obj); err != nil {
+		return apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid resource yaml", http.StatusBadRequest)
+	}
+	return nil
+}
+
+func validateYAMLObject(expectedKind, namespace, name string, meta metav1.Object, actualKind string) error {
+	if !strings.EqualFold(actualKind, expectedKind) {
+		return apperrors.New(apperrors.CodeInvalidArgument, fmt.Sprintf("yaml kind must be %s", expectedKind), http.StatusBadRequest)
+	}
+	if meta.GetName() != name {
+		return apperrors.New(apperrors.CodeInvalidArgument, "yaml metadata.name must match request name", http.StatusBadRequest)
+	}
+	if meta.GetNamespace() != namespace {
+		return apperrors.New(apperrors.CodeInvalidArgument, "yaml metadata.namespace must match request namespace", http.StatusBadRequest)
+	}
+	return nil
+}
+
+func marshalResourceYAML(obj any) (string, error) {
+	switch item := obj.(type) {
+	case *corev1.Node:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Node"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *corev1.Pod:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *appsv1.Deployment:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *appsv1.StatefulSet:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *appsv1.DaemonSet:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *appsv1.ReplicaSet:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "ReplicaSet"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *batchv1.Job:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *batchv1.CronJob:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *corev1.Service:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Service"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *networkingv1.Ingress:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "Ingress"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *corev1.ConfigMap:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *corev1.PersistentVolumeClaim:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *corev1.PersistentVolume:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolume"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	case *storagev1.StorageClass:
+		out := item.DeepCopy()
+		out.TypeMeta = metav1.TypeMeta{APIVersion: "storage.k8s.io/v1", Kind: "StorageClass"}
+		out.ManagedFields = nil
+		return marshalYAML(out)
+	default:
+		return marshalYAML(obj)
+	}
+}
+
+func marshalYAML(obj any) (string, error) {
 	raw, err := yaml.Marshal(obj)
 	if err != nil {
 		return "", err

@@ -214,6 +214,15 @@ export interface OperationResult {
   deployment?: DeploymentSummary
 }
 
+export interface ResourceYAMLUpdateResult {
+  kind: string
+  namespace: string
+  name: string
+  operation: string
+  updated_at: string
+  yaml: string
+}
+
 export function getOverview() {
   return request<ClusterOverview>({
     method: 'GET',
@@ -357,6 +366,19 @@ export function getResourceYAML(kind: ResourceKind, name: string, namespace?: st
     method: 'GET',
     url: '/resources/yaml',
     params: { kind, namespace, name }
+  })
+}
+
+export function updateResourceYAML(kind: ResourceKind, name: string, namespace: string, resourceYAML: string) {
+  return request<ResourceYAMLUpdateResult>({
+    method: 'PUT',
+    url: '/resources/yaml',
+    data: {
+      kind,
+      namespace,
+      name,
+      yaml: resourceYAML
+    }
   })
 }
 
