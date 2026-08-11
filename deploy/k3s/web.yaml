@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-web
+  namespace: ops-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-web
+  template:
+    metadata:
+      labels:
+        app: ops-web
+    spec:
+      containers:
+        - name: ops-web
+          image: ops-platform/ops-web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops-web
+  namespace: ops-platform
+spec:
+  selector:
+    app: ops-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

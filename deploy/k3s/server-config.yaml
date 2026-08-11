@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ops-server-config
+  namespace: ops-platform
+data:
+  ops-server.yaml: |
+    server:
+      mode: release
+      listen: "0.0.0.0:8080"
+      read_timeout: 15s
+      write_timeout: 15s
+      shutdown_timeout: 10s
+      cors:
+        allowed_origins:
+          - "*"
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowed_headers:
+          - Authorization
+          - Content-Type
+          - X-Request-ID
+
+    kubernetes:
+      mode: in-cluster
+      kubeconfig: ""
+      namespace: ops-platform
+
+    database:
+      driver: sqlite
+      dsn: "file:/data/ops-platform.db?_foreign_keys=1&_busy_timeout=5000"
+      max_open_conns: 1
+      max_idle_conns: 1
+      auto_migrate: true
+
+    log:
+      level: info
+      format: json
+
+    auth:
+      jwt_issuer: ops-platform
+      jwt_secret: "change-me-placeholder"
+      access_token_ttl: 15m
+      refresh_token_ttl: 168h
+      mfa_enabled: false
+      local_admin:
+        enabled: true
+        username: admin
+        email: admin@example.com
+        password: "change-me-admin-password"

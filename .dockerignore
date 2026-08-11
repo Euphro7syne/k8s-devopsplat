@@ -1,0 +1,14 @@
+.cache/
+.git/
+.github/
+.idea/
+.reasonix/
+bin/
+data/
+backup/
+web/node_modules/
+web/dist/
+*.db
+*.sqlite
+.DS_Store
+configs/ops-server.yaml

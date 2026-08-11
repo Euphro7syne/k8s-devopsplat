@@ -1,0 +1,574 @@
+openapi: 3.0.3
+info:
+  title: Ops Platform API
+  version: 0.1.0
+servers:
+  - url: /api/v1
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: getHealthz
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthEnvelope"
+        "503":
+          description: Service is degraded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthEnvelope"
+  /auth/login:
+    post:
+      summary: Login with local email credentials
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+  /auth/refresh:
+    post:
+      summary: Refresh JWT token pair
+      operationId: refreshToken
+      responses:
+        "200":
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+  /auth/profile:
+    get:
+      summary: Current user profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrincipalEnvelope"
+  /clusters:
+    get:
+      summary: List configured clusters
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Cluster list
+  /overview:
+    get:
+      summary: Get cluster overview
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Cluster overview
+  /namespaces:
+    get:
+      summary: List namespaces
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Namespace list
+  /nodes:
+    get:
+      summary: List nodes
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Node page
+  /resources/yaml:
+    get:
+      summary: Export Kubernetes resource YAML
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - node
+              - pod
+              - deployment
+              - statefulset
+              - daemonset
+              - replicaset
+              - job
+              - cronjob
+              - service
+              - ingress
+              - configmap
+              - pvc
+              - pv
+              - storageclass
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resource YAML
+  /namespaces/{namespace}/pods:
+    get:
+      summary: List pods
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pod page
+  /namespaces/{namespace}/pods/{pod}:
+    get:
+      summary: Get pod detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+      responses:
+        "200":
+          description: Pod detail
+    delete:
+      summary: Delete pod
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Delete request submitted
+  /namespaces/{namespace}/pods/{pod}/logs:
+    get:
+      summary: Query pod logs from Kubernetes API
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+        - name: container
+          in: query
+          schema:
+            type: string
+        - name: keyword
+          in: query
+          schema:
+            type: string
+        - name: level
+          in: query
+          schema:
+            type: string
+        - name: previous
+          in: query
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Log result
+  /namespaces/{namespace}/pods/{pod}/yaml:
+    get:
+      summary: Export pod YAML
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+      responses:
+        "200":
+          description: Pod YAML
+  /namespaces/{namespace}/deployments:
+    get:
+      summary: List deployments
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Deployment page
+  /namespaces/{namespace}/deployments/{name}:
+    get:
+      summary: Get deployment detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Deployment detail
+  /namespaces/{namespace}/deployments/{name}/yaml:
+    get:
+      summary: Export deployment YAML
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Deployment YAML
+  /namespaces/{namespace}/deployments/{name}/scale:
+    post:
+      summary: Scale deployment
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - replicas
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        "200":
+          description: Deployment scaled
+  /namespaces/{namespace}/deployments/{name}/restart:
+    post:
+      summary: Restart deployment by annotating pod template
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Deployment restart submitted
+  /namespaces/{namespace}/statefulsets:
+    get:
+      summary: List statefulsets
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: StatefulSet page
+  /namespaces/{namespace}/daemonsets:
+    get:
+      summary: List daemonsets
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: DaemonSet page
+  /namespaces/{namespace}/replicasets:
+    get:
+      summary: List replicasets
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: ReplicaSet page
+  /namespaces/{namespace}/jobs:
+    get:
+      summary: List jobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Job page
+  /namespaces/{namespace}/cronjobs:
+    get:
+      summary: List cronjobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: CronJob page
+  /namespaces/{namespace}/services:
+    get:
+      summary: List services
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Service page
+  /namespaces/{namespace}/ingresses:
+    get:
+      summary: List ingresses
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Ingress page
+  /namespaces/{namespace}/configmaps:
+    get:
+      summary: List configmaps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: ConfigMap page
+  /namespaces/{namespace}/persistentvolumeclaims:
+    get:
+      summary: List persistent volume claims
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: PVC page
+  /persistentvolumes:
+    get:
+      summary: List persistent volumes
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: PV page
+  /storageclasses:
+    get:
+      summary: List storage classes
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: StorageClass page
+  /namespaces/{namespace}/events:
+    get:
+      summary: List namespace events
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "200":
+          description: Event list
+  /logs:
+    get:
+      summary: Query logs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Log result
+  /audit/logs:
+    get:
+      summary: List audit logs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Audit log list
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Namespace:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+    Pod:
+      name: pod
+      in: path
+      required: true
+      schema:
+        type: string
+    Name:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        default: 20
+  schemas:
+    ResponseEnvelope:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        data:
+          nullable: true
+    HealthEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/ResponseEnvelope"
+        - type: object
+          properties:
+            data:
+              $ref: "#/components/schemas/Health"
+    Health:
+      type: object
+      required:
+        - status
+        - database
+        - time
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - degraded
+        database:
+          type: string
+          enum:
+            - ok
+            - error
+        time:
+          type: string
+          format: date-time
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    Principal:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        email:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+    LoginResult:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+        expires_in:
+          type: integer
+        user:
+          $ref: "#/components/schemas/Principal"
+    LoginEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/ResponseEnvelope"
+        - type: object
+          properties:
+            data:
+              $ref: "#/components/schemas/LoginResult"
+    PrincipalEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/ResponseEnvelope"
+        - type: object
+          properties:
+            data:
+              $ref: "#/components/schemas/Principal"

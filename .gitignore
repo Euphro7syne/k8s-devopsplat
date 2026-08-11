@@ -1,0 +1,15 @@
+bin/
+.cache/
+backup/
+data/
+dist/
+node_modules/
+coverage/
+.DS_Store
+.idea/
+.reasonix/
+*.log
+*.db
+*.sqlite
+configs/ops-server.yaml
+web/dist/

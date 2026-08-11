@@ -1,0 +1,17 @@
+# RBAC
+
+平台内部角色固定为 `viewer`、`operator`、`configadmin`、`auditor`、`admin`。
+
+阶段 1 已实现本地 email 登录、JWT 会话和接口级角色校验。
+
+最小权限约束：
+
+| 接口能力 | 平台角色 |
+|---|---|
+| 资源查看 / Pod 日志 | viewer/operator/configadmin/auditor/admin |
+| 删除 Pod、扩缩容、重启 Deployment | operator/admin |
+| 查看审计日志 | auditor/admin |
+
+Kubernetes RBAC 只开放资源只读、`pods/log` 读取、`pods` 删除、`deployments` 更新/patch。资源只读覆盖 core/apps/batch/networking/storage 中 P0 资源：Namespace、Node、Pod、Event、ConfigMap、Service、PVC/PV、Deployment、StatefulSet、ReplicaSet、DaemonSet、Job、CronJob、Ingress、StorageClass。
+
+`pods/exec`、Secret 读写、Namespace 删除、Node 写操作仍未开放。后续如果加入 Secret 管理，平台内必须先做 AES-GCM 加密存储、列表脱敏和 Admin/ConfigAdmin 权限约束，再调整 Kubernetes RBAC。

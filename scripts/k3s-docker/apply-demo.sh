@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+kubectl apply -f test/integration/fixtures/demo-workload.yaml
+kubectl -n demo-app rollout status deploy/nginx-demo --timeout=120s
+kubectl -n demo-app rollout status deploy/log-demo --timeout=120s
+kubectl -n demo-app get pods -o wide
