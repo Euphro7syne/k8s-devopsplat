@@ -8,6 +8,9 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Setenv("OPS_AUTH_JWT_SECRET", "env-jwt-secret")
+	t.Setenv("OPS_AUTH_MFA_SECRET_KEY", "env-mfa-secret-key")
+	t.Setenv("OPS_AUTH_LOCAL_ADMIN_PASSWORD", "env-admin-password")
 	path := filepath.Join(t.TempDir(), "ops-server.yaml")
 	raw := []byte(`
 server:
@@ -37,5 +40,11 @@ auth:
 	}
 	if cfg.Database.Driver != "sqlite" {
 		t.Fatalf("unexpected database driver: %s", cfg.Database.Driver)
+	}
+	if cfg.Auth.JWTSecret != "env-jwt-secret" || cfg.Auth.MFASecretKey != "env-mfa-secret-key" {
+		t.Fatalf("expected auth secret environment overrides")
+	}
+	if cfg.Auth.LocalAdmin.Password != "env-admin-password" {
+		t.Fatalf("expected local admin password environment override")
 	}
 }

@@ -12,6 +12,7 @@ const menuItems = computed(() =>
   [
     { index: 'dashboard', label: '集群概览', roles: [] },
     { index: 'resources', label: '资源管理', roles: [] },
+    { index: 'security', label: '安全设置', roles: [] },
     { index: 'audit', label: '操作审计', roles: ['auditor', 'admin'] },
     { index: 'users', label: '用户管理', roles: ['admin'] }
   ].filter((item) => auth.hasAnyRole(item.roles))

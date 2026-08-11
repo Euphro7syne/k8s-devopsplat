@@ -43,9 +43,49 @@ paths:
     post:
       summary: Refresh JWT token pair
       operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
       responses:
         "200":
           description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+  /auth/mfa/setup:
+    post:
+      summary: Start mandatory MFA enrollment from a login challenge
+      operationId: setupLoginMFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFASetupRequest"
+      responses:
+        "200":
+          description: TOTP enrollment details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MFASetupEnvelope"
+  /auth/mfa/verify:
+    post:
+      summary: Verify a login TOTP challenge and issue a JWT token pair
+      operationId: verifyLoginMFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFAVerifyRequest"
+      responses:
+        "200":
+          description: MFA verified
           content:
             application/json:
               schema:
@@ -62,6 +102,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrincipalEnvelope"
+  /auth/mfa/status:
+    get:
+      summary: Current user's MFA status and server policy
+      operationId: getMFAStatus
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: MFA status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MFAStatusEnvelope"
+  /auth/mfa/enrollment:
+    post:
+      summary: Start MFA enrollment for the current authenticated user
+      operationId: startMFAEnrollment
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: TOTP enrollment details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MFASetupEnvelope"
+  /auth/mfa/enable:
+    post:
+      summary: Verify and enable MFA for the current user
+      operationId: enableMFA
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFAVerifyRequest"
+      responses:
+        "200":
+          description: MFA enabled and replacement token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+  /auth/mfa/disable:
+    post:
+      summary: Disable MFA for the current user when server policy permits it
+      operationId: disableMFA
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MFADisableRequest"
+      responses:
+        "200":
+          description: MFA disabled and replacement token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
   /clusters:
     get:
       summary: List configured clusters
@@ -147,6 +251,26 @@ paths:
       responses:
         "200":
           description: User roles updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserEnvelope"
+  /users/{id}/mfa:
+    delete:
+      summary: Reset another user's MFA enrollment
+      operationId: resetUserMFA
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: User MFA reset
           content:
             application/json:
               schema:
@@ -632,6 +756,43 @@ components:
         password:
           type: string
           format: password
+    RefreshRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+    MFASetupRequest:
+      type: object
+      required:
+        - mfa_token
+      properties:
+        mfa_token:
+          type: string
+    MFAVerifyRequest:
+      type: object
+      required:
+        - mfa_token
+        - code
+      properties:
+        mfa_token:
+          type: string
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+    MFADisableRequest:
+      type: object
+      required:
+        - password
+        - code
+      properties:
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
     ResourceYAMLUpdateRequest:
       type: object
       required:
@@ -681,6 +842,8 @@ components:
           type: array
           items:
             type: string
+        mfa_enabled:
+          type: boolean
     Role:
       type: object
       properties:
@@ -743,6 +906,10 @@ components:
           type: array
           items:
             type: string
+        mfa_enabled:
+          type: boolean
+        mfa_verified:
+          type: boolean
     LoginResult:
       type: object
       properties:
@@ -756,6 +923,39 @@ components:
           type: integer
         user:
           $ref: "#/components/schemas/Principal"
+        mfa_required:
+          type: boolean
+        mfa_setup_required:
+          type: boolean
+        mfa_token:
+          type: string
+    MFASetupResult:
+      type: object
+      required:
+        - secret
+        - provisioning_uri
+        - mfa_token
+        - expires_in
+      properties:
+        secret:
+          type: string
+        provisioning_uri:
+          type: string
+        mfa_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+    MFAStatus:
+      type: object
+      required:
+        - enabled
+        - required
+      properties:
+        enabled:
+          type: boolean
+        required:
+          type: boolean
     LoginEnvelope:
       allOf:
         - $ref: "#/components/schemas/ResponseEnvelope"
@@ -770,6 +970,20 @@ components:
           properties:
             data:
               $ref: "#/components/schemas/Principal"
+    MFASetupEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/ResponseEnvelope"
+        - type: object
+          properties:
+            data:
+              $ref: "#/components/schemas/MFASetupResult"
+    MFAStatusEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/ResponseEnvelope"
+        - type: object
+          properties:
+            data:
+              $ref: "#/components/schemas/MFAStatus"
     UserEnvelope:
       allOf:
         - $ref: "#/components/schemas/ResponseEnvelope"

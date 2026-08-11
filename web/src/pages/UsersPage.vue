@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { CircleCheck, CircleClose, Plus, Refresh, Select } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, Key, Plus, Refresh, Select } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   createUser,
   listRoles,
   listUsers,
+  resetUserMFA,
   updateUserRoles,
   updateUserStatus,
   type CreateUserPayload,
@@ -23,6 +24,7 @@ const createLoading = ref(false)
 const createVisible = ref(false)
 const roleSaving = ref<number | null>(null)
 const statusSaving = ref<number | null>(null)
+const mfaResetting = ref<number | null>(null)
 const users = ref<UserRecord[]>([])
 const roles = ref<RoleRecord[]>([])
 const roleDrafts = reactive<Record<number, string[]>>({})
@@ -135,6 +137,29 @@ async function toggleStatus(row: UserRecord) {
   }
 }
 
+async function resetMFA(row: UserRecord) {
+  if (isSelf(row) || !row.mfa_enabled) return
+  try {
+    await ElMessageBox.confirm(
+      `重置用户 ${row.username} 的 MFA？其现有动态码会立即失效，下次登录需要重新绑定。`,
+      '二次确认',
+      { confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  mfaResetting.value = row.id
+  try {
+    await resetUserMFA(row.id)
+    ElMessage.success('MFA 已重置')
+    await loadAll()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'MFA 重置失败')
+  } finally {
+    mfaResetting.value = null
+  }
+}
+
 onMounted(loadAll)
 </script>
 
@@ -161,6 +186,13 @@ onMounted(loadAll)
             <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="MFA" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.mfa_enabled ? 'success' : 'info'">
+              {{ row.mfa_enabled ? '已启用' : '未启用' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="角色" min-width="280">
           <template #default="{ row }">
             <el-select
@@ -178,7 +210,7 @@ onMounted(loadAll)
         <el-table-column label="创建时间" width="180">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="176" fixed="right">
+        <el-table-column label="操作" width="224" fixed="right">
           <template #default="{ row }">
             <el-tooltip content="保存角色">
               <el-button :icon="Select" circle :loading="roleSaving === row.id" :disabled="isSelf(row)" @click="saveRoles(row)" />
@@ -191,6 +223,16 @@ onMounted(loadAll)
                 :loading="statusSaving === row.id"
                 :disabled="isSelf(row) && row.status === 'active'"
                 @click="toggleStatus(row)"
+              />
+            </el-tooltip>
+            <el-tooltip content="重置 MFA">
+              <el-button
+                :icon="Key"
+                circle
+                type="danger"
+                :loading="mfaResetting === row.id"
+                :disabled="isSelf(row) || !row.mfa_enabled"
+                @click="resetMFA(row)"
               />
             </el-tooltip>
           </template>

@@ -56,6 +56,7 @@ ORDER BY id`)
 			return nil, err
 		}
 		users[i].Roles = roles
+		users[i].MFAEnabled = users[i].MFASecret != ""
 	}
 	return users, nil
 }
@@ -115,6 +116,21 @@ SET status = ?
 WHERE id = ?`, status, userID)
 	if err != nil {
 		return fmt.Errorf("update user status: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpdateUserMFASecret(ctx context.Context, userID int64, secret string) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE users
+SET mfa_secret = ?
+WHERE id = ?`, secret, userID)
+	if err != nil {
+		return fmt.Errorf("update user mfa secret: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err == nil && affected == 0 {
@@ -234,5 +250,6 @@ WHERE ` + where
 		return nil, err
 	}
 	user.Roles = roles
+	user.MFAEnabled = user.MFASecret != ""
 	return &user, nil
 }

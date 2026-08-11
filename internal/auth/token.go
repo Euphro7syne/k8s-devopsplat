@@ -16,33 +16,46 @@ import (
 )
 
 const (
-	TokenTypeAccess  = "access"
-	TokenTypeRefresh = "refresh"
+	TokenTypeAccess       = "access"
+	TokenTypeRefresh      = "refresh"
+	TokenTypeMFAChallenge = "mfa_challenge"
 )
 
 type Principal struct {
-	UserID   int64    `json:"user_id"`
-	Username string   `json:"username"`
-	Email    string   `json:"email"`
-	Roles    []string `json:"roles"`
+	UserID      int64    `json:"user_id"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email"`
+	Roles       []string `json:"roles"`
+	MFAEnabled  bool     `json:"mfa_enabled"`
+	MFAVerified bool     `json:"mfa_verified"`
 }
 
 type Claims struct {
-	Subject   string   `json:"sub"`
-	Username  string   `json:"username"`
-	Email     string   `json:"email"`
-	Roles     []string `json:"roles"`
-	Type      string   `json:"type"`
-	Issuer    string   `json:"iss"`
-	IssuedAt  int64    `json:"iat"`
-	ExpiresAt int64    `json:"exp"`
+	Subject     string   `json:"sub"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email"`
+	Roles       []string `json:"roles"`
+	Type        string   `json:"type"`
+	Issuer      string   `json:"iss"`
+	IssuedAt    int64    `json:"iat"`
+	ExpiresAt   int64    `json:"exp"`
+	MFAEnabled  bool     `json:"mfa_enabled,omitempty"`
+	MFAVerified bool     `json:"mfa_verified,omitempty"`
+	MFAPurpose  string   `json:"mfa_purpose,omitempty"`
+	MFASecret   string   `json:"mfa_secret,omitempty"`
+}
+
+type MFAChallenge struct {
+	Principal Principal
+	Purpose   string
+	Secret    string
 }
 
 type TokenPair struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int64  `json:"expires_in"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	TokenType    string `json:"token_type,omitempty"`
+	ExpiresIn    int64  `json:"expires_in,omitempty"`
 }
 
 type TokenManager struct {
@@ -69,14 +82,37 @@ func (m *TokenManager) Issue(principal Principal, tokenType string, ttl time.Dur
 	}
 	now := m.nowFunc().UTC()
 	claims := Claims{
-		Subject:   strconv.FormatInt(principal.UserID, 10),
-		Username:  principal.Username,
-		Email:     principal.Email,
-		Roles:     principal.Roles,
-		Type:      tokenType,
-		Issuer:    m.issuer,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(ttl).Unix(),
+		Subject:     strconv.FormatInt(principal.UserID, 10),
+		Username:    principal.Username,
+		Email:       principal.Email,
+		Roles:       principal.Roles,
+		Type:        tokenType,
+		Issuer:      m.issuer,
+		IssuedAt:    now.Unix(),
+		ExpiresAt:   now.Add(ttl).Unix(),
+		MFAEnabled:  principal.MFAEnabled,
+		MFAVerified: principal.MFAVerified,
+	}
+	return m.sign(claims)
+}
+
+func (m *TokenManager) IssueMFAChallenge(principal Principal, purpose, secret string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", fmt.Errorf("token ttl must be positive")
+	}
+	now := m.nowFunc().UTC()
+	claims := Claims{
+		Subject:    strconv.FormatInt(principal.UserID, 10),
+		Username:   principal.Username,
+		Email:      principal.Email,
+		Roles:      principal.Roles,
+		Type:       TokenTypeMFAChallenge,
+		Issuer:     m.issuer,
+		IssuedAt:   now.Unix(),
+		ExpiresAt:  now.Add(ttl).Unix(),
+		MFAEnabled: principal.MFAEnabled,
+		MFAPurpose: purpose,
+		MFASecret:  secret,
 	}
 	return m.sign(claims)
 }
@@ -86,24 +122,59 @@ func (m *TokenManager) Parse(token, expectedType string) (Principal, error) {
 	if err != nil {
 		return Principal{}, err
 	}
+	if err := m.validateClaims(claims, expectedType); err != nil {
+		return Principal{}, err
+	}
+	return principalFromClaims(claims)
+}
+
+func (m *TokenManager) ParseMFAChallenge(token string) (MFAChallenge, error) {
+	claims, err := m.parseClaims(token)
+	if err != nil {
+		return MFAChallenge{}, err
+	}
+	if err := m.validateClaims(claims, TokenTypeMFAChallenge); err != nil {
+		return MFAChallenge{}, err
+	}
+	principal, err := principalFromClaims(claims)
+	if err != nil {
+		return MFAChallenge{}, err
+	}
+	if claims.MFAPurpose == "" {
+		return MFAChallenge{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid mfa challenge", 401)
+	}
+	return MFAChallenge{
+		Principal: principal,
+		Purpose:   claims.MFAPurpose,
+		Secret:    claims.MFASecret,
+	}, nil
+}
+
+func (m *TokenManager) validateClaims(claims Claims, expectedType string) error {
 	if claims.Type != expectedType {
-		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid token type", 401)
+		return apperrors.New(apperrors.CodeUnauthenticated, "invalid token type", 401)
 	}
 	if claims.Issuer != m.issuer {
-		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid token issuer", 401)
+		return apperrors.New(apperrors.CodeUnauthenticated, "invalid token issuer", 401)
 	}
 	if claims.ExpiresAt <= m.nowFunc().UTC().Unix() {
-		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "token expired", 401)
+		return apperrors.New(apperrors.CodeUnauthenticated, "token expired", 401)
 	}
+	return nil
+}
+
+func principalFromClaims(claims Claims) (Principal, error) {
 	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
 	if err != nil {
 		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid token subject", 401)
 	}
 	return Principal{
-		UserID:   userID,
-		Username: claims.Username,
-		Email:    claims.Email,
-		Roles:    claims.Roles,
+		UserID:      userID,
+		Username:    claims.Username,
+		Email:       claims.Email,
+		Roles:       claims.Roles,
+		MFAEnabled:  claims.MFAEnabled,
+		MFAVerified: claims.MFAVerified,
 	}, nil
 }
 

@@ -21,11 +21,19 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) RegisterPublic(r gin.IRoutes) {
 	r.POST("/auth/login", h.login)
 	r.POST("/auth/refresh", h.refresh)
+	r.POST("/auth/mfa/setup", h.mfaSetup)
+}
+
+func (h *Handler) RegisterMFAVerification(r gin.IRoutes) {
+	r.POST("/auth/mfa/verify", h.mfaVerify)
 }
 
 func (h *Handler) RegisterProtected(r gin.IRoutes) {
 	r.GET("/auth/profile", h.profile)
-	r.POST("/auth/mfa/verify", h.mfaVerifyPlaceholder)
+	r.GET("/auth/mfa/status", h.mfaStatus)
+	r.POST("/auth/mfa/enrollment", h.mfaEnrollment)
+	r.POST("/auth/mfa/enable", h.mfaEnable)
+	r.POST("/auth/mfa/disable", h.mfaDisable)
 }
 
 func (h *Handler) RegisterAdmin(r gin.IRoutes, adminMiddleware gin.HandlerFunc) {
@@ -34,6 +42,7 @@ func (h *Handler) RegisterAdmin(r gin.IRoutes, adminMiddleware gin.HandlerFunc) 
 	r.POST("/users", adminMiddleware, h.createUser)
 	r.PUT("/users/:id/status", adminMiddleware, h.updateUserStatus)
 	r.PUT("/users/:id/roles", adminMiddleware, h.updateUserRoles)
+	r.DELETE("/users/:id/mfa", adminMiddleware, h.resetUserMFA)
 }
 
 func (h *Handler) login(c *gin.Context) {
@@ -73,8 +82,99 @@ func (h *Handler) profile(c *gin.Context) {
 	response.Success(c, principal)
 }
 
-func (h *Handler) mfaVerifyPlaceholder(c *gin.Context) {
-	response.Success(c, gin.H{"enabled": false})
+func (h *Handler) mfaSetup(c *gin.Context) {
+	var req MFASetupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid mfa setup request", http.StatusBadRequest))
+		return
+	}
+	result, err := h.service.SetupMFA(c.Request.Context(), req.MFAToken)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) mfaVerify(c *gin.Context) {
+	var req MFAVerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid mfa verification request", http.StatusBadRequest))
+		return
+	}
+	result, err := h.service.VerifyMFA(c.Request.Context(), req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	WithPrincipal(c, result.User)
+	response.Success(c, result)
+}
+
+func (h *Handler) mfaStatus(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, apperrors.New(apperrors.CodeUnauthenticated, "unauthenticated", http.StatusUnauthorized))
+		return
+	}
+	result, err := h.service.MFAStatus(c.Request.Context(), userID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) mfaEnrollment(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, apperrors.New(apperrors.CodeUnauthenticated, "unauthenticated", http.StatusUnauthorized))
+		return
+	}
+	result, err := h.service.StartMFAEnrollment(c.Request.Context(), userID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) mfaEnable(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, apperrors.New(apperrors.CodeUnauthenticated, "unauthenticated", http.StatusUnauthorized))
+		return
+	}
+	var req MFAVerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid mfa enable request", http.StatusBadRequest))
+		return
+	}
+	result, err := h.service.EnableMFA(c.Request.Context(), userID, req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) mfaDisable(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, apperrors.New(apperrors.CodeUnauthenticated, "unauthenticated", http.StatusUnauthorized))
+		return
+	}
+	var req MFADisableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid mfa disable request", http.StatusBadRequest))
+		return
+	}
+	result, err := h.service.DisableMFA(c.Request.Context(), userID, req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 
 func (h *Handler) roles(c *gin.Context) {
@@ -148,6 +248,24 @@ func (h *Handler) updateUserRoles(c *gin.Context) {
 		return
 	}
 	result, err := h.service.ReplaceUserRoles(c.Request.Context(), currentUserID, userID, req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) resetUserMFA(c *gin.Context) {
+	userID, ok := h.userIDParam(c)
+	if !ok {
+		return
+	}
+	currentID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, apperrors.New(apperrors.CodeUnauthenticated, "unauthenticated", http.StatusUnauthorized))
+		return
+	}
+	result, err := h.service.ResetUserMFA(c.Request.Context(), currentID, userID, c.Query("confirm") == "true")
 	if err != nil {
 		response.Error(c, err)
 		return

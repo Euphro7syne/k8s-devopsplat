@@ -12,6 +12,7 @@ type User struct {
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	Roles        []string  `json:"roles"`
+	MFAEnabled   bool      `json:"mfa_enabled"`
 }
 
 type Role struct {

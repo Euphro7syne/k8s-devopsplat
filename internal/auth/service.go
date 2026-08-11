@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -15,10 +16,17 @@ import (
 	"ops-platform/internal/store"
 )
 
+const (
+	mfaPurposeVerify = "verify"
+	mfaPurposeEnroll = "enroll"
+)
+
 type Service struct {
-	store  store.AuthStore
-	cfg    config.AuthConfig
-	tokens *TokenManager
+	store   store.AuthStore
+	cfg     config.AuthConfig
+	tokens  *TokenManager
+	totp    *TOTP
+	secrets *MFASecretCipher
 }
 
 type LoginRequest struct {
@@ -28,11 +36,40 @@ type LoginRequest struct {
 
 type LoginResponse struct {
 	TokenPair
-	User Principal `json:"user"`
+	User             Principal `json:"user"`
+	MFARequired      bool      `json:"mfa_required"`
+	MFASetupRequired bool      `json:"mfa_setup_required"`
+	MFAToken         string    `json:"mfa_token,omitempty"`
 }
 
 type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type MFASetupRequest struct {
+	MFAToken string `json:"mfa_token" binding:"required"`
+}
+
+type MFAVerifyRequest struct {
+	MFAToken string `json:"mfa_token" binding:"required"`
+	Code     string `json:"code" binding:"required,len=6,numeric"`
+}
+
+type MFADisableRequest struct {
+	Password string `json:"password" binding:"required"`
+	Code     string `json:"code" binding:"required,len=6,numeric"`
+}
+
+type MFASetupResponse struct {
+	Secret          string `json:"secret"`
+	ProvisioningURI string `json:"provisioning_uri"`
+	MFAToken        string `json:"mfa_token"`
+	ExpiresIn       int64  `json:"expires_in"`
+}
+
+type MFAStatus struct {
+	Enabled  bool `json:"enabled"`
+	Required bool `json:"required"`
 }
 
 type CreateUserRequest struct {
@@ -51,10 +88,27 @@ type UpdateUserRolesRequest struct {
 }
 
 func NewService(store store.AuthStore, cfg config.AuthConfig) *Service {
+	if strings.TrimSpace(cfg.MFAIssuer) == "" {
+		cfg.MFAIssuer = strings.TrimSpace(cfg.JWTIssuer)
+		if cfg.MFAIssuer == "" {
+			cfg.MFAIssuer = "ops-platform"
+		}
+	}
+	if cfg.MFAChallengeTTL <= 0 {
+		cfg.MFAChallengeTTL = 5 * time.Minute
+	}
+	if cfg.MFASecretKey == "" {
+		cfg.MFASecretKey = cfg.JWTSecret
+		if cfg.MFASecretKey == "" {
+			cfg.MFASecretKey = "change-me-mfa-secret-key"
+		}
+	}
 	return &Service{
-		store:  store,
-		cfg:    cfg,
-		tokens: NewTokenManager(cfg),
+		store:   store,
+		cfg:     cfg,
+		tokens:  NewTokenManager(cfg),
+		totp:    NewTOTP(cfg.MFAIssuer),
+		secrets: NewMFASecretCipher(cfg.MFASecretKey),
 	}
 }
 
@@ -104,7 +158,14 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResponse, e
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid email or password", http.StatusUnauthorized)
 	}
-	return s.issueForUser(*user)
+	if s.mfaRequired(*user) {
+		purpose := mfaPurposeVerify
+		if user.MFASecret == "" {
+			purpose = mfaPurposeEnroll
+		}
+		return s.issueMFAChallenge(*user, purpose)
+	}
+	return s.issueForUser(*user, false)
 }
 
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (LoginResponse, error) {
@@ -122,7 +183,13 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (LoginRespon
 	if user.Status != "active" {
 		return LoginResponse{}, apperrors.New(apperrors.CodePermissionDenied, "user is disabled", http.StatusForbidden)
 	}
-	return s.issueForUser(*user)
+	if s.cfg.MFAEnabled && user.MFASecret == "" {
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+	}
+	if user.MFASecret != "" && !principal.MFAVerified {
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
+	}
+	return s.issueForUser(*user, principal.MFAVerified && user.MFASecret != "")
 }
 
 func (s *Service) ParseAccessToken(token string) (Principal, error) {
@@ -144,12 +211,90 @@ func (s *Service) AuthenticateAccessToken(ctx context.Context, token string) (Pr
 	if user.Status != "active" {
 		return Principal{}, apperrors.New(apperrors.CodePermissionDenied, "user is disabled", http.StatusForbidden)
 	}
-	return Principal{
-		UserID:   user.ID,
-		Username: user.Username,
-		Email:    user.Email,
-		Roles:    user.Roles,
+	if s.cfg.MFAEnabled && user.MFASecret == "" {
+		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+	}
+	if user.MFASecret != "" && !principal.MFAVerified {
+		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
+	}
+	return principalForUser(*user, principal.MFAVerified && user.MFASecret != ""), nil
+}
+
+func (s *Service) SetupMFA(ctx context.Context, mfaToken string) (MFASetupResponse, error) {
+	challenge, err := s.tokens.ParseMFAChallenge(mfaToken)
+	if err != nil {
+		return MFASetupResponse{}, err
+	}
+	if challenge.Purpose != mfaPurposeEnroll || challenge.Secret != "" {
+		return MFASetupResponse{}, apperrors.New(apperrors.CodeInvalidArgument, "mfa setup is not required", http.StatusBadRequest)
+	}
+	user, err := s.activeUser(ctx, challenge.Principal.UserID)
+	if err != nil {
+		return MFASetupResponse{}, err
+	}
+	if user.MFASecret != "" {
+		return MFASetupResponse{}, apperrors.New(apperrors.CodeConflict, "mfa is already enabled", http.StatusConflict)
+	}
+	return s.newMFASetup(*user)
+}
+
+func (s *Service) StartMFAEnrollment(ctx context.Context, userID int64) (MFASetupResponse, error) {
+	user, err := s.activeUser(ctx, userID)
+	if err != nil {
+		return MFASetupResponse{}, err
+	}
+	if user.MFASecret != "" {
+		return MFASetupResponse{}, apperrors.New(apperrors.CodeConflict, "mfa is already enabled", http.StatusConflict)
+	}
+	return s.newMFASetup(*user)
+}
+
+func (s *Service) VerifyMFA(ctx context.Context, req MFAVerifyRequest) (LoginResponse, error) {
+	return s.verifyMFAChallenge(ctx, 0, req)
+}
+
+func (s *Service) EnableMFA(ctx context.Context, userID int64, req MFAVerifyRequest) (LoginResponse, error) {
+	return s.verifyMFAChallenge(ctx, userID, req)
+}
+
+func (s *Service) MFAStatus(ctx context.Context, userID int64) (MFAStatus, error) {
+	user, err := s.activeUser(ctx, userID)
+	if err != nil {
+		return MFAStatus{}, err
+	}
+	return MFAStatus{
+		Enabled:  user.MFASecret != "",
+		Required: s.cfg.MFAEnabled,
 	}, nil
+}
+
+func (s *Service) DisableMFA(ctx context.Context, userID int64, req MFADisableRequest) (LoginResponse, error) {
+	if s.cfg.MFAEnabled {
+		return LoginResponse{}, apperrors.New(apperrors.CodePermissionDenied, "mfa is required by server policy", http.StatusForbidden)
+	}
+	user, err := s.activeUser(ctx, userID)
+	if err != nil {
+		return LoginResponse{}, err
+	}
+	if user.MFASecret == "" {
+		return LoginResponse{}, apperrors.New(apperrors.CodeConflict, "mfa is not enabled", http.StatusConflict)
+	}
+	if user.Provider != "local" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid password or authentication code", http.StatusUnauthorized)
+	}
+	secret, err := s.secrets.Decrypt(user.MFASecret)
+	if err != nil {
+		return LoginResponse{}, fmt.Errorf("decrypt user mfa secret: %w", err)
+	}
+	if !s.totp.Validate(secret, req.Code) {
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid password or authentication code", http.StatusUnauthorized)
+	}
+	if err := s.store.UpdateUserMFASecret(ctx, user.ID, ""); err != nil {
+		return LoginResponse{}, mapUserWriteError(err, "disable mfa failed")
+	}
+	user.MFASecret = ""
+	user.MFAEnabled = false
+	return s.issueForUser(*user, false)
 }
 
 func (s *Service) ListUsers(ctx context.Context) ([]model.User, error) {
@@ -230,13 +375,32 @@ func (s *Service) ReplaceUserRoles(ctx context.Context, currentUserID, userID in
 	return *updated, nil
 }
 
-func (s *Service) issueForUser(user model.User) (LoginResponse, error) {
-	principal := Principal{
-		UserID:   user.ID,
-		Username: user.Username,
-		Email:    user.Email,
-		Roles:    user.Roles,
+func (s *Service) ResetUserMFA(ctx context.Context, currentUserID, userID int64, confirm bool) (model.User, error) {
+	if !confirm {
+		return model.User{}, apperrors.New(apperrors.CodeInvalidArgument, "confirm=true is required", http.StatusBadRequest)
 	}
+	if userID == currentUserID {
+		return model.User{}, apperrors.New(apperrors.CodeInvalidArgument, "cannot reset current user mfa", http.StatusBadRequest)
+	}
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return model.User{}, mapUserWriteError(err, "reset user mfa failed")
+	}
+	if user.MFASecret == "" {
+		return model.User{}, apperrors.New(apperrors.CodeConflict, "mfa is not enabled", http.StatusConflict)
+	}
+	if err := s.store.UpdateUserMFASecret(ctx, userID, ""); err != nil {
+		return model.User{}, mapUserWriteError(err, "reset user mfa failed")
+	}
+	updated, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return model.User{}, err
+	}
+	return *updated, nil
+}
+
+func (s *Service) issueForUser(user model.User, mfaVerified bool) (LoginResponse, error) {
+	principal := principalForUser(user, mfaVerified)
 	accessToken, err := s.tokens.Issue(principal, TokenTypeAccess, s.cfg.AccessTokenTTL)
 	if err != nil {
 		return LoginResponse{}, err
@@ -252,8 +416,132 @@ func (s *Service) issueForUser(user model.User) (LoginResponse, error) {
 			TokenType:    "Bearer",
 			ExpiresIn:    int64(s.cfg.AccessTokenTTL.Seconds()),
 		},
-		User: principal,
+		User:        principal,
+		MFARequired: false,
 	}, nil
+}
+
+func (s *Service) issueMFAChallenge(user model.User, purpose string) (LoginResponse, error) {
+	principal := principalForUser(user, false)
+	token, err := s.tokens.IssueMFAChallenge(principal, purpose, "", s.cfg.MFAChallengeTTL)
+	if err != nil {
+		return LoginResponse{}, err
+	}
+	return LoginResponse{
+		User:             principal,
+		MFARequired:      true,
+		MFASetupRequired: purpose == mfaPurposeEnroll,
+		MFAToken:         token,
+	}, nil
+}
+
+func (s *Service) newMFASetup(user model.User) (MFASetupResponse, error) {
+	secret, err := s.totp.GenerateSecret()
+	if err != nil {
+		return MFASetupResponse{}, err
+	}
+	token, err := s.tokens.IssueMFAChallenge(principalForUser(user, false), mfaPurposeEnroll, secret, s.cfg.MFAChallengeTTL)
+	if err != nil {
+		return MFASetupResponse{}, err
+	}
+	return MFASetupResponse{
+		Secret:          secret,
+		ProvisioningURI: s.totp.ProvisioningURI(user.Email, secret),
+		MFAToken:        token,
+		ExpiresIn:       int64(s.cfg.MFAChallengeTTL.Seconds()),
+	}, nil
+}
+
+func (s *Service) verifyMFAChallenge(ctx context.Context, expectedUserID int64, req MFAVerifyRequest) (LoginResponse, error) {
+	challenge, err := s.tokens.ParseMFAChallenge(req.MFAToken)
+	if err != nil {
+		return LoginResponse{}, err
+	}
+	if expectedUserID > 0 && challenge.Principal.UserID != expectedUserID {
+		return LoginResponse{}, apperrors.New(apperrors.CodePermissionDenied, "mfa challenge belongs to another user", http.StatusForbidden)
+	}
+	user, err := s.activeUser(ctx, challenge.Principal.UserID)
+	if err != nil {
+		return LoginResponse{}, err
+	}
+
+	storedSecret := user.MFASecret
+	secret := ""
+	switch challenge.Purpose {
+	case mfaPurposeVerify:
+		if storedSecret == "" {
+			return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+		}
+		secret, err = s.secrets.Decrypt(storedSecret)
+		if err != nil {
+			return LoginResponse{}, fmt.Errorf("decrypt user mfa secret: %w", err)
+		}
+	case mfaPurposeEnroll:
+		if challenge.Secret == "" {
+			return LoginResponse{}, apperrors.New(apperrors.CodeInvalidArgument, "mfa setup must be completed first", http.StatusBadRequest)
+		}
+		if storedSecret != "" {
+			return LoginResponse{}, apperrors.New(apperrors.CodeConflict, "mfa is already enabled", http.StatusConflict)
+		}
+		secret = challenge.Secret
+	default:
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid mfa challenge", http.StatusUnauthorized)
+	}
+
+	if !s.totp.Validate(secret, req.Code) {
+		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid authentication code", http.StatusUnauthorized)
+	}
+	if challenge.Purpose == mfaPurposeVerify && !strings.HasPrefix(storedSecret, encryptedMFASecretPrefix) {
+		encryptedSecret, err := s.secrets.Encrypt(secret)
+		if err != nil {
+			return LoginResponse{}, err
+		}
+		if err := s.store.UpdateUserMFASecret(ctx, user.ID, encryptedSecret); err != nil {
+			return LoginResponse{}, mapUserWriteError(err, "upgrade mfa secret encryption failed")
+		}
+		user.MFASecret = encryptedSecret
+	}
+	if challenge.Purpose == mfaPurposeEnroll {
+		encryptedSecret, err := s.secrets.Encrypt(secret)
+		if err != nil {
+			return LoginResponse{}, err
+		}
+		if err := s.store.UpdateUserMFASecret(ctx, user.ID, encryptedSecret); err != nil {
+			return LoginResponse{}, mapUserWriteError(err, "enable mfa failed")
+		}
+		user.MFASecret = encryptedSecret
+		user.MFAEnabled = true
+	}
+	return s.issueForUser(*user, true)
+}
+
+func (s *Service) activeUser(ctx context.Context, userID int64) (*model.User, error) {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, apperrors.New(apperrors.CodeUnauthenticated, "user not found", http.StatusUnauthorized)
+		}
+		return nil, err
+	}
+	if user.Status != "active" {
+		return nil, apperrors.New(apperrors.CodePermissionDenied, "user is disabled", http.StatusForbidden)
+	}
+	return user, nil
+}
+
+func (s *Service) mfaRequired(user model.User) bool {
+	return s.cfg.MFAEnabled || user.MFASecret != ""
+}
+
+func principalForUser(user model.User, mfaVerified bool) Principal {
+	return Principal{
+		UserID:      user.ID,
+		Username:    user.Username,
+		Email:       user.Email,
+		Roles:       user.Roles,
+		MFAEnabled:  user.MFASecret != "",
+		MFAVerified: mfaVerified,
+	}
 }
 
 func fallbackUsername(username, email string) string {

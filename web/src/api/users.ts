@@ -8,6 +8,7 @@ export interface UserRecord {
   status: 'active' | 'disabled'
   created_at: string
   roles: string[]
+  mfa_enabled: boolean
 }
 
 export interface RoleRecord {
@@ -57,5 +58,13 @@ export function updateUserRoles(id: number, roles: string[]) {
     method: 'PUT',
     url: `/users/${id}/roles`,
     data: { roles }
+  })
+}
+
+export function resetUserMFA(id: number) {
+  return request<UserRecord>({
+    method: 'DELETE',
+    url: `/users/${id}/mfa`,
+    params: { confirm: true }
   })
 }

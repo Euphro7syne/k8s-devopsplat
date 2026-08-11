@@ -21,6 +21,22 @@ spec:
           args:
             - "-config"
             - "/etc/ops-platform/ops-server.yaml"
+          env:
+            - name: OPS_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ops-server-secrets
+                  key: jwt-secret
+            - name: OPS_AUTH_MFA_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ops-server-secrets
+                  key: mfa-secret-key
+            - name: OPS_AUTH_LOCAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ops-server-secrets
+                  key: local-admin-password
           ports:
             - name: http
               containerPort: 8080

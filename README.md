@@ -157,7 +157,7 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 ### 6.1 认证与权限（`internal/auth`）
 
 - 登录：LDAP 绑定验证 / 本地 email + 密码；成功签发 JWT（短时效 + refresh）。
-- MFA：TOTP（RFC 6238），首次登录强制绑定，可在设置中开关。
+- MFA：TOTP（RFC 6238）；平台可配置为全员强制，首次登录完成绑定验证后才签发 JWT；非强制模式可在安全设置中启停，Admin 可为丢失身份验证器的其他用户重置绑定。
 - RBAC 角色与权限矩阵：
 
 | 能力 | Viewer | Operator | ConfigAdmin | Auditor | Admin |
@@ -260,6 +260,9 @@ sessions(id, user_id, asset_id, type, started_at, ended_at, recording_path, comm
 # 认证
 POST /api/v1/auth/login          POST /api/v1/auth/mfa/verify
 POST /api/v1/auth/refresh         GET  /api/v1/auth/profile
+POST /api/v1/auth/mfa/setup       GET  /api/v1/auth/mfa/status
+POST /api/v1/auth/mfa/enrollment  POST /api/v1/auth/mfa/enable|disable
+DELETE /api/v1/users/{id}/mfa?confirm=true  # Admin 重置他人 MFA
 
 # 资源
 GET  /api/v1/clusters            # 多集群预留（MVP 固定返回当前集群）
@@ -546,6 +549,7 @@ make deploy   # kubectl apply -f deploy/k3s
 ## 16. 相关文档
 
 - [docs/architecture.md](docs/architecture.md) — 架构详解与演进说明
+- [docs/auth.md](docs/auth.md) — 本地认证、JWT 与 TOTP MFA 流程
 - [docs/rbac.md](docs/rbac.md) — 角色权限矩阵与 k8s 最小授权清单
 - [docs/config-center.md](docs/config-center.md) — 配置中心模型与发布流程
 - [docs/audit.md](docs/audit.md) — 审计、会话录像与合规设计

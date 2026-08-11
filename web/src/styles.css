@@ -57,6 +57,44 @@ input {
   width: 100%;
 }
 
+.secondary-login-button {
+  margin-top: 10px;
+  margin-left: 0 !important;
+}
+
+.mfa-login-step,
+.mfa-enrollment {
+  display: grid;
+  gap: 18px;
+}
+
+.mfa-qr {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.mfa-secret-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.mfa-secret-row code {
+  min-width: 0;
+  flex: 1;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 13px;
+}
+
 .app-shell {
   min-height: 100vh;
 }
@@ -102,6 +140,49 @@ input {
 
 .app-main {
   padding: 24px;
+}
+
+.security-card {
+  max-width: 640px;
+}
+
+.security-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-weight: 600;
+}
+
+.security-action {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.security-action > p,
+.mfa-enrollment > p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.security-action > .el-button {
+  justify-self: start;
+}
+
+.security-form {
+  width: min(100%, 420px);
+}
+
+.security-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.security-secret-row {
+  max-width: 420px;
 }
 
 .page-head {

@@ -14,6 +14,8 @@ cd ops-platform-k3s-docker-*
 kubectl -n ops-platform port-forward svc/ops-web 18080:80
 ```
 
+`prepare-config.sh` 会为 JWT、TOTP AES-GCM 和初始管理员密码生成随机值，并写入 `deploy/k3s/server-secret.yaml`。输出的临时管理员密码只显示一次，请立即安全保存并在首次登录后启用 MFA。
+
 浏览器访问：
 
 ```text

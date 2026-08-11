@@ -4,6 +4,7 @@ import DashboardPage from '../pages/DashboardPage.vue'
 import AuditPage from '../pages/AuditPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import ResourcesPage from '../pages/ResourcesPage.vue'
+import SecurityPage from '../pages/SecurityPage.vue'
 import UsersPage from '../pages/UsersPage.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -25,6 +26,11 @@ const router = createRouter({
       path: '/resources',
       name: 'resources',
       component: ResourcesPage
+    },
+    {
+      path: '/security',
+      name: 'security',
+      component: SecurityPage
     },
     {
       path: '/audit',

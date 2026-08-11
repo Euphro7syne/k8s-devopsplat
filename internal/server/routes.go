@@ -20,6 +20,9 @@ func (s *Server) registerRoutes() {
 
 	authHandler := auth.NewHandler(s.authService)
 	authHandler.RegisterPublic(api)
+	mfaVerification := api.Group("")
+	mfaVerification.Use(s.auditMiddleware())
+	authHandler.RegisterMFAVerification(mfaVerification)
 
 	protected := api.Group("")
 	protected.Use(s.authMiddleware(), s.auditMiddleware())

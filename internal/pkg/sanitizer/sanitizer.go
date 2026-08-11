@@ -3,6 +3,7 @@ package sanitizer
 import "regexp"
 
 var sensitivePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)("(?:[^"\\]*_)?(?:password|token|secret|authorization|api_key|private_key|code)"\s*:\s*)("(?:\\.|[^"\\])*"|null|true|false|-?\d+(?:\.\d+)?)`),
 	regexp.MustCompile(`(?i)(password\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`),
 	regexp.MustCompile(`(?i)(token\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`),
 	regexp.MustCompile(`(?i)(secret\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`),
@@ -13,8 +14,12 @@ var sensitivePatterns = []*regexp.Regexp{
 
 func String(input string) string {
 	output := input
-	for _, pattern := range sensitivePatterns {
-		output = pattern.ReplaceAllString(output, `${1}***`)
+	for index, pattern := range sensitivePatterns {
+		replacement := `${1}***`
+		if index == 0 {
+			replacement = `${1}"***"`
+		}
+		output = pattern.ReplaceAllString(output, replacement)
 	}
 	return output
 }

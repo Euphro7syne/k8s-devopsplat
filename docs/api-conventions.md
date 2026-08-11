@@ -35,11 +35,18 @@
 ```text
 POST /api/v1/auth/login
 POST /api/v1/auth/refresh
+POST /api/v1/auth/mfa/setup
+POST /api/v1/auth/mfa/verify
 GET  /api/v1/auth/profile
+GET  /api/v1/auth/mfa/status
+POST /api/v1/auth/mfa/enrollment
+POST /api/v1/auth/mfa/enable
+POST /api/v1/auth/mfa/disable
 GET  /api/v1/roles
 GET/POST /api/v1/users
 PUT  /api/v1/users/{id}/status
 PUT  /api/v1/users/{id}/roles
+DELETE /api/v1/users/{id}/mfa?confirm=true
 GET  /api/v1/clusters
 GET  /api/v1/overview
 GET  /api/v1/namespaces
@@ -73,3 +80,5 @@ GET  /api/v1/audit/logs
 ```
 
 YAML 更新仅开放 `deployment/statefulset/daemonset/job/cronjob/service/ingress`，由 `operator/admin` 调用并经过审计中间件。ConfigMap 仍必须走配置中心流程，Secret 仍未纳入阶段 1 的通用列表与 YAML 导出。后续启用 Secret 时必须保持列表脱敏、明文读取受角色控制，并同步 Kubernetes RBAC。
+
+MFA 登录响应在需要二次验证时返回 `mfa_required=true`、`mfa_setup_required` 和短时 `mfa_token`，此时不会返回 access/refresh token。首次绑定先调用 `auth/mfa/setup` 获取 TOTP URI，再用 `auth/mfa/verify` 完成绑定并取得 JWT。管理员重置 MFA 属于删除类操作，必须携带 `confirm=true`。

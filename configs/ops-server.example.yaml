@@ -41,6 +41,9 @@ auth:
   access_token_ttl: 15m
   refresh_token_ttl: 168h
   mfa_enabled: false
+  mfa_issuer: ops-platform
+  mfa_challenge_ttl: 5m
+  mfa_secret_key: "change-me-mfa-secret-key"
   local_admin:
     enabled: true
     username: admin

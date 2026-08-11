@@ -56,6 +56,9 @@ type AuthConfig struct {
 	AccessTokenTTL  time.Duration    `yaml:"access_token_ttl"`
 	RefreshTokenTTL time.Duration    `yaml:"refresh_token_ttl"`
 	MFAEnabled      bool             `yaml:"mfa_enabled"`
+	MFAIssuer       string           `yaml:"mfa_issuer"`
+	MFAChallengeTTL time.Duration    `yaml:"mfa_challenge_ttl"`
+	MFASecretKey    string           `yaml:"mfa_secret_key"`
 	LocalAdmin      LocalAdminConfig `yaml:"local_admin"`
 }
 
@@ -102,6 +105,9 @@ func Default() Config {
 			AccessTokenTTL:  15 * time.Minute,
 			RefreshTokenTTL: 168 * time.Hour,
 			MFAEnabled:      false,
+			MFAIssuer:       "ops-platform",
+			MFAChallengeTTL: 5 * time.Minute,
+			MFASecretKey:    "change-me-mfa-secret-key",
 			LocalAdmin: LocalAdminConfig{
 				Enabled:  true,
 				Username: "admin",
@@ -114,21 +120,35 @@ func Default() Config {
 
 func Load(path string) (*Config, error) {
 	cfg := Default()
-	if path == "" {
-		return &cfg, nil
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read config %q: %w", path, err)
+		}
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("parse config %q: %w", path, err)
+		}
 	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config %q: %w", path, err)
-	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config %q: %w", path, err)
-	}
+	applyEnvironmentOverrides(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func applyEnvironmentOverrides(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if value := os.Getenv("OPS_AUTH_JWT_SECRET"); value != "" {
+		cfg.Auth.JWTSecret = value
+	}
+	if value := os.Getenv("OPS_AUTH_MFA_SECRET_KEY"); value != "" {
+		cfg.Auth.MFASecretKey = value
+	}
+	if value := os.Getenv("OPS_AUTH_LOCAL_ADMIN_PASSWORD"); value != "" {
+		cfg.Auth.LocalAdmin.Password = value
+	}
 }
 
 func (c Config) Validate() error {
@@ -141,6 +161,18 @@ func (c Config) Validate() error {
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database.dsn is required")
 	}
+	if c.Auth.JWTIssuer == "" {
+		return fmt.Errorf("auth.jwt_issuer is required")
+	}
+	if c.Auth.JWTSecret == "" {
+		return fmt.Errorf("auth.jwt_secret is required")
+	}
+	if c.Auth.AccessTokenTTL <= 0 {
+		return fmt.Errorf("auth.access_token_ttl must be positive")
+	}
+	if c.Auth.RefreshTokenTTL <= 0 {
+		return fmt.Errorf("auth.refresh_token_ttl must be positive")
+	}
 	if c.Auth.LocalAdmin.Enabled {
 		if c.Auth.LocalAdmin.Email == "" {
 			return fmt.Errorf("auth.local_admin.email is required when local admin is enabled")
@@ -148,6 +180,15 @@ func (c Config) Validate() error {
 		if c.Auth.LocalAdmin.Password == "" {
 			return fmt.Errorf("auth.local_admin.password is required when local admin is enabled")
 		}
+	}
+	if c.Auth.MFAIssuer == "" {
+		return fmt.Errorf("auth.mfa_issuer is required")
+	}
+	if c.Auth.MFAChallengeTTL <= 0 {
+		return fmt.Errorf("auth.mfa_challenge_ttl must be positive")
+	}
+	if c.Auth.MFASecretKey == "" {
+		return fmt.Errorf("auth.mfa_secret_key is required")
 	}
 	switch c.Database.Driver {
 	case "sqlite", "sqlite3":
