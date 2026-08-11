@@ -8,6 +8,7 @@ interface LoginForm {
 }
 
 interface AuthState {
+  userID: number
   token: string
   refreshToken: string
   username: string
@@ -17,6 +18,7 @@ interface AuthState {
 
 export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
+    userID: 0,
     token: '',
     refreshToken: '',
     username: '',
@@ -24,11 +26,17 @@ export const useAuthStore = defineStore('auth', {
     roles: []
   }),
   getters: {
-    isAuthenticated: (state) => state.token.length > 0
+    isAuthenticated: (state) => state.token.length > 0,
+    hasAnyRole: (state) => (roles: string[]) => {
+      if (roles.length === 0) return true
+      if (state.roles.includes('admin')) return true
+      return roles.some((role) => state.roles.includes(role))
+    }
   },
   actions: {
     bootstrap() {
       if (!this.token) {
+        this.userID = Number(localStorage.getItem('ops-user-id') ?? '0')
         this.token = localStorage.getItem('ops-token') ?? ''
         this.refreshToken = localStorage.getItem('ops-refresh-token') ?? ''
         this.username = localStorage.getItem('ops-username') ?? ''
@@ -45,11 +53,13 @@ export const useAuthStore = defineStore('auth', {
       this.applyUser(principal)
     },
     logout() {
+      this.userID = 0
       this.token = ''
       this.refreshToken = ''
       this.username = ''
       this.email = ''
       this.roles = []
+      localStorage.removeItem('ops-user-id')
       localStorage.removeItem('ops-token')
       localStorage.removeItem('ops-refresh-token')
       localStorage.removeItem('ops-username')
@@ -64,9 +74,11 @@ export const useAuthStore = defineStore('auth', {
       this.applyUser(user)
     },
     applyUser(user: Principal) {
+      this.userID = user.user_id
       this.username = user.username
       this.email = user.email
       this.roles = user.roles
+      localStorage.setItem('ops-user-id', String(user.user_id))
       localStorage.setItem('ops-username', user.username)
       localStorage.setItem('ops-email', user.email)
       localStorage.setItem('ops-roles', JSON.stringify(user.roles))

@@ -28,8 +28,10 @@ func (s *Server) registerRoutes() {
 	readAccess := s.requireRoles("viewer", "operator", "configadmin", "auditor", "admin")
 	writeAccess := s.requireRoles("operator", "admin")
 	auditAccess := s.requireRoles("auditor", "admin")
+	adminAccess := s.requireRoles("admin")
 
 	protected.GET("/clusters", readAccess, s.clusters)
+	authHandler.RegisterAdmin(protected, adminAccess)
 	resources.NewHandler(resources.NewService(s.kubeClient, "in-cluster")).Register(protected, readAccess, writeAccess)
 	logquery.NewHandler(logquery.NewService(s.kubeClient)).Register(protected, readAccess)
 	workload.NewHandler(workload.NewService(s.kubeClient)).Register(protected, writeAccess)

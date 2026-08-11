@@ -8,9 +8,12 @@
 
 | 接口能力 | 平台角色 |
 |---|---|
+| 用户 / 角色管理 | admin |
 | 资源查看 / Pod 日志 | viewer/operator/configadmin/auditor/admin |
 | 删除 Pod、扩缩容、重启 Deployment、受限资源 YAML 更新 | operator/admin |
 | 查看审计日志 | auditor/admin |
+
+用户管理接口包括 `GET /api/v1/users`、`POST /api/v1/users`、`PUT /api/v1/users/{id}/status`、`PUT /api/v1/users/{id}/roles` 和 `GET /api/v1/roles`。创建用户只支持本地账号，密码使用 bcrypt hash 存储；管理员不能禁用自己，也不能修改自己的角色。认证中间件会按 access token 中的 user id 回查当前用户状态与角色，禁用和角色变更无需等待 JWT 过期。
 
 Kubernetes RBAC 只开放资源只读、`pods/log` 读取、`pods` 删除，以及 `deployments/statefulsets/daemonsets/jobs/cronjobs/services/ingresses` 更新。资源只读覆盖 core/apps/batch/networking/storage 中 P0 资源：Namespace、Node、Pod、Event、ConfigMap、Service、PVC/PV、Deployment、StatefulSet、ReplicaSet、DaemonSet、Job、CronJob、Ingress、StorageClass。
 

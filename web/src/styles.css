@@ -168,6 +168,17 @@ input {
   font-size: 13px;
 }
 
+.role-select,
+.form-select {
+  width: 100%;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .drawer-toolbar {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 140px auto auto;

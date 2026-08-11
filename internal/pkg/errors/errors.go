@@ -15,6 +15,7 @@ const (
 	CodeInvalidArgument    Code = 10002
 	CodeNotFound           Code = 10003
 	CodeServiceUnavailable Code = 10004
+	CodeConflict           Code = 10005
 
 	CodeUnauthenticated  Code = 20001
 	CodePermissionDenied Code = 20002

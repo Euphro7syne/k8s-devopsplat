@@ -28,12 +28,18 @@
 
 分页参数统一为 `page` / `page_size`。
 
+当前 common 错误码包含：`10001 internal`、`10002 invalid argument`、`10003 not found`、`10004 service unavailable`、`10005 conflict`。
+
 阶段 1 已实现：
 
 ```text
 POST /api/v1/auth/login
 POST /api/v1/auth/refresh
 GET  /api/v1/auth/profile
+GET  /api/v1/roles
+GET/POST /api/v1/users
+PUT  /api/v1/users/{id}/status
+PUT  /api/v1/users/{id}/roles
 GET  /api/v1/clusters
 GET  /api/v1/overview
 GET  /api/v1/namespaces

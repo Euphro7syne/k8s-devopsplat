@@ -4,6 +4,7 @@ import DashboardPage from '../pages/DashboardPage.vue'
 import AuditPage from '../pages/AuditPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import ResourcesPage from '../pages/ResourcesPage.vue'
+import UsersPage from '../pages/UsersPage.vue'
 import { useAuthStore } from '../stores/auth'
 
 const router = createRouter({
@@ -28,7 +29,14 @@ const router = createRouter({
     {
       path: '/audit',
       name: 'audit',
-      component: AuditPage
+      component: AuditPage,
+      meta: { roles: ['auditor', 'admin'] }
+    },
+    {
+      path: '/users',
+      name: 'users',
+      component: UsersPage,
+      meta: { roles: ['admin'] }
     }
   ]
 })
@@ -40,6 +48,10 @@ router.beforeEach((to) => {
     return { name: 'login' }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
+    return { name: 'dashboard' }
+  }
+  const roles = to.meta.roles as string[] | undefined
+  if (roles && !auth.hasAnyRole(roles)) {
     return { name: 'dashboard' }
   }
   return true

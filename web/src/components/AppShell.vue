@@ -8,6 +8,14 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const activeMenu = computed(() => String(route.name ?? 'dashboard'))
+const menuItems = computed(() =>
+  [
+    { index: 'dashboard', label: '集群概览', roles: [] },
+    { index: 'resources', label: '资源管理', roles: [] },
+    { index: 'audit', label: '操作审计', roles: ['auditor', 'admin'] },
+    { index: 'users', label: '用户管理', roles: ['admin'] }
+  ].filter((item) => auth.hasAnyRole(item.roles))
+)
 
 function selectMenu(index: string) {
   if (index === 'dashboard') {
@@ -31,9 +39,9 @@ function logout() {
         <span>ops-platform</span>
       </div>
       <el-menu :default-active="activeMenu" class="nav-menu" @select="selectMenu">
-        <el-menu-item index="dashboard">集群概览</el-menu-item>
-        <el-menu-item index="resources">资源管理</el-menu-item>
-        <el-menu-item index="audit">操作审计</el-menu-item>
+        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
+          {{ item.label }}
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

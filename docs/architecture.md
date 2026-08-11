@@ -6,7 +6,7 @@
 
 阶段 1 MVP 资源运维链路：
 
-- `internal/auth`：本地 email 登录、JWT access/refresh、角色校验。
+- `internal/auth`：本地 email 登录、JWT access/refresh、角色校验，以及 Admin-only 用户/角色管理。
 - `internal/resources`：Namespace、Node、Pod、Deployment、StatefulSet、ReplicaSet、DaemonSet、Job、CronJob、Service、Ingress、ConfigMap、PV/PVC、StorageClass、Event、YAML 与集群概览查询；YAML 更新仅开放 Workload、Service、Ingress 的受限集合。
 - `internal/logquery`：MVP 使用 Kubernetes API 直查 Pod 日志。
 - `internal/workload`：Pod 删除、Deployment 扩缩容、Deployment 重启。

@@ -76,7 +76,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		principal, err := s.authService.ParseAccessToken(token)
+		principal, err := s.authService.AuthenticateAccessToken(c.Request.Context(), token)
 		if err != nil {
 			response.Error(c, err)
 			c.Abort()
