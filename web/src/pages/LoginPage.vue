@@ -18,7 +18,7 @@ const mfaToken = ref('')
 const enrollment = ref<MFASetupResult | null>(null)
 const form = reactive({
   email: 'admin@example.com',
-  password: 'change-me-admin-password',
+  password: 'admin123',
   code: ''
 })
 

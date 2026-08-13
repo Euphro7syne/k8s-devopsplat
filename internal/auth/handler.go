@@ -51,7 +51,7 @@ func (h *Handler) login(c *gin.Context) {
 		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid login request", http.StatusBadRequest))
 		return
 	}
-	result, err := h.service.Login(c.Request.Context(), req)
+	result, err := h.service.LoginWithSource(c.Request.Context(), req, c.ClientIP())
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -102,7 +102,7 @@ func (h *Handler) mfaVerify(c *gin.Context) {
 		response.Error(c, apperrors.Wrap(err, apperrors.CodeInvalidArgument, "invalid mfa verification request", http.StatusBadRequest))
 		return
 	}
-	result, err := h.service.VerifyMFA(c.Request.Context(), req)
+	result, err := h.service.VerifyMFAWithSource(c.Request.Context(), req, c.ClientIP())
 	if err != nil {
 		response.Error(c, err)
 		return

@@ -43,5 +43,5 @@ cp "${ROOT_DIR}/scripts/k3s-docker/"*.sh "${PKG_DIR}/"
 cp "${ROOT_DIR}/scripts/k3s-docker/README-DEPLOY.md" "${PKG_DIR}/"
 chmod +x "${PKG_DIR}/"*.sh
 
-tar -C "${OUT_ROOT}" -czf "${OUT_ROOT}/ops-platform-k3s-docker-${STAMP}.tar.gz" "ops-platform-k3s-docker-${STAMP}"
+COPYFILE_DISABLE=1 tar -C "${OUT_ROOT}" -czf "${OUT_ROOT}/ops-platform-k3s-docker-${STAMP}.tar.gz" "ops-platform-k3s-docker-${STAMP}"
 echo "${OUT_ROOT}/ops-platform-k3s-docker-${STAMP}.tar.gz"

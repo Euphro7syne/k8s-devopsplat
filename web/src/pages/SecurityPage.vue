@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { CopyDocument, Key, Lock } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { CopyDocument, Key } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import QrcodeVue from 'qrcode.vue'
 
 import {
-  disableMFA as disableMFAApi,
   getMFAStatus,
   startMFAEnrollment,
   type MFASetupResult,
@@ -20,8 +19,7 @@ const submitting = ref(false)
 const status = ref<MFAStatus>({ enabled: auth.mfaEnabled, required: false })
 const enrollment = ref<MFASetupResult | null>(null)
 const form = reactive({
-  code: '',
-  password: ''
+  code: ''
 })
 
 onMounted(loadStatus)
@@ -65,32 +63,6 @@ async function confirmEnrollment() {
   }
 }
 
-async function disableMFA() {
-  try {
-    await ElMessageBox.confirm(
-      '关闭后，账号只使用密码登录。确认继续吗？',
-      '关闭 MFA',
-      { type: 'warning', confirmButtonText: '确认关闭', cancelButtonText: '取消' }
-    )
-  } catch {
-    return
-  }
-
-  submitting.value = true
-  try {
-    const result = await disableMFAApi(form.password, form.code)
-    auth.applyLoginResult(result)
-    form.password = ''
-    form.code = ''
-    status.value.enabled = false
-    ElMessage.success('MFA 已关闭')
-  } catch (error) {
-    showError(error, '关闭 MFA 失败')
-  } finally {
-    submitting.value = false
-  }
-}
-
 async function copySecret() {
   if (!enrollment.value) return
   try {
@@ -124,22 +96,31 @@ function showError(error: unknown, fallback: string) {
       <template #header>
         <div class="security-card-head">
           <span>身份验证器</span>
-          <el-tag :type="status.enabled ? 'success' : 'info'">
-            {{ status.enabled ? '已启用' : '未启用' }}
+          <el-tag :type="status.required && status.enabled ? 'success' : 'info'">
+            {{ !status.required ? '登录认证已关闭' : status.enabled ? '已启用' : '待绑定' }}
           </el-tag>
         </div>
       </template>
 
       <el-alert
-        v-if="status.required"
-        title="平台已强制 MFA"
-        description="所有账号必须绑定身份验证器，当前账号无法关闭 MFA。"
+        v-if="!status.required"
+        title="TOTP 登录认证已关闭"
+        description="当前 auth.mfa_enabled=false，登录只校验账号密码，不要求输入动态码。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+
+      <el-alert
+        v-else
+        title="平台已开启 TOTP 登录认证"
+        description="所有账号必须绑定身份验证器并在登录时输入动态码。"
         type="warning"
         :closable="false"
         show-icon
       />
 
-      <template v-if="!status.enabled">
+      <template v-if="status.required && !status.enabled">
         <div v-if="!enrollment" class="security-action">
           <p>启用后，每次密码校验成功还需要输入 6 位动态码。</p>
           <el-button type="primary" @click="beginEnrollment">绑定身份验证器</el-button>
@@ -175,30 +156,8 @@ function showError(error: unknown, fallback: string) {
         </div>
       </template>
 
-      <div v-else-if="!status.required" class="security-action">
-        <p>关闭 MFA 需要同时验证当前密码和身份验证器动态码。</p>
-        <el-form class="security-form" :model="form" label-position="top" @submit.prevent="disableMFA">
-          <el-form-item label="当前密码">
-            <el-input
-              v-model="form.password"
-              autocomplete="current-password"
-              type="password"
-              show-password
-              :prefix-icon="Lock"
-            />
-          </el-form-item>
-          <el-form-item label="6 位动态码">
-            <el-input
-              v-model="form.code"
-              autocomplete="one-time-code"
-              inputmode="numeric"
-              maxlength="6"
-              placeholder="000000"
-              :prefix-icon="Key"
-            />
-          </el-form-item>
-          <el-button type="danger" :loading="submitting" @click="disableMFA">关闭 MFA</el-button>
-        </el-form>
+      <div v-else-if="status.required && status.enabled" class="security-action">
+        <p>当前账号已绑定身份验证器，每次登录都必须输入 6 位动态码。</p>
       </div>
     </el-card>
   </AppShell>

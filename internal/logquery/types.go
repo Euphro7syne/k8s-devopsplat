@@ -23,3 +23,10 @@ type Result struct {
 	Lines     []Line `json:"lines"`
 	Total     int    `json:"total"`
 }
+
+type StreamMessage struct {
+	Type    string `json:"type"`
+	Line    *Line  `json:"line,omitempty"`
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}

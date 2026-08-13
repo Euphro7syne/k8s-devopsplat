@@ -3,6 +3,7 @@ package logquery
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apperrors "ops-platform/internal/pkg/errors"
+	"ops-platform/internal/pkg/sanitizer"
 	"ops-platform/internal/resources"
 )
 
@@ -31,11 +33,8 @@ func NewService(client resources.KubernetesClient) *Service {
 }
 
 func (s *Service) Query(ctx context.Context, query Query) (Result, error) {
-	if s.client == nil {
-		return Result{}, apperrors.New(apperrors.CodeKubernetesUnavailable, "kubernetes client unavailable", http.StatusServiceUnavailable)
-	}
-	if query.Namespace == "" || query.Pod == "" {
-		return Result{}, apperrors.New(apperrors.CodeInvalidArgument, "namespace and pod are required", http.StatusBadRequest)
+	if err := s.validate(query); err != nil {
+		return Result{}, err
 	}
 	limit := normalizeLimit(query.Limit)
 	options := &corev1.PodLogOptions{
@@ -72,6 +71,68 @@ func (s *Service) Query(ctx context.Context, query Query) (Result, error) {
 	}, nil
 }
 
+func (s *Service) Follow(ctx context.Context, query Query, onLine func(Line) error) error {
+	if err := s.validate(query); err != nil {
+		return err
+	}
+	if query.Previous {
+		return apperrors.New(apperrors.CodeInvalidArgument, "previous container logs do not support realtime follow", http.StatusBadRequest)
+	}
+	if onLine == nil {
+		return apperrors.New(apperrors.CodeInvalidArgument, "stream line handler is required", http.StatusBadRequest)
+	}
+
+	limit := normalizeLimit(query.Limit)
+	options := &corev1.PodLogOptions{
+		Container:  query.Container,
+		Follow:     true,
+		Timestamps: true,
+		TailLines:  &limit,
+	}
+	if query.From != "" {
+		parsed, err := time.Parse(time.RFC3339, query.From)
+		if err != nil {
+			return apperrors.Wrap(err, apperrors.CodeInvalidArgument, "from must be RFC3339", http.StatusBadRequest)
+		}
+		options.SinceTime = &metav1.Time{Time: parsed}
+	}
+
+	stream, err := s.client.CoreV1().Pods(query.Namespace).GetLogs(query.Pod, options).Stream(ctx)
+	if err != nil {
+		return mapKubernetesError(err, "follow pod logs failed")
+	}
+	defer stream.Close()
+	return streamLines(ctx, stream, query.Keyword, query.Level, onLine)
+}
+
+func streamLines(ctx context.Context, reader io.Reader, keyword, level string, onLine func(Line) error) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		raw := scanner.Text()
+		if !lineMatches(raw, keyword, level) {
+			continue
+		}
+		if err := onLine(Line{Raw: sanitizer.String(raw)}); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Errorf("read realtime log stream: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) validate(query Query) error {
+	if s.client == nil {
+		return apperrors.New(apperrors.CodeKubernetesUnavailable, "kubernetes client unavailable", http.StatusServiceUnavailable)
+	}
+	if query.Namespace == "" || query.Pod == "" {
+		return apperrors.New(apperrors.CodeInvalidArgument, "namespace and pod are required", http.StatusBadRequest)
+	}
+	return nil
+}
+
 func normalizeLimit(limit int64) int64 {
 	if limit <= 0 {
 		return defaultLogLimit
@@ -92,7 +153,7 @@ func readLines(reader io.Reader, keyword, level string) ([]Line, error) {
 		if !lineMatches(raw, keyword, level) {
 			continue
 		}
-		lines = append(lines, Line{Raw: raw})
+		lines = append(lines, Line{Raw: sanitizer.String(raw)})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read log stream: %w", err)

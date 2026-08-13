@@ -87,6 +87,25 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 	}
 }
 
+func (s *Server) websocketAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token, err := auth.WebSocketBearerToken(c.GetHeader("Sec-WebSocket-Protocol"))
+		if err != nil {
+			response.Error(c, err)
+			c.Abort()
+			return
+		}
+		principal, err := s.authService.AuthenticateAccessToken(c.Request.Context(), token)
+		if err != nil {
+			response.Error(c, err)
+			c.Abort()
+			return
+		}
+		auth.WithPrincipal(c, principal)
+		c.Next()
+	}
+}
+
 func (s *Server) requireRoles(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		principal, ok := auth.PrincipalFromContext(c)

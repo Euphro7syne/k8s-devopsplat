@@ -1,11 +1,13 @@
 FROM golang:1.22-alpine AS build
 
+ARG GOPROXY=https://goproxy.cn,direct
+
 WORKDIR /src
 RUN apk add --no-cache build-base
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY="${GOPROXY}" go mod download
 COPY . .
-RUN go build -o /out/ops-server ./cmd/ops-server
+RUN GOPROXY="${GOPROXY}" go build -o /out/ops-server ./cmd/ops-server
 
 FROM alpine:3.20
 

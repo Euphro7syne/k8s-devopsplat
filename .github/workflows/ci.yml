@@ -23,3 +23,24 @@ jobs:
       - run: make lint
       - run: make test
       - run: make build
+
+  resources-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      K3D_VERSION: v5.8.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.31.5"
+      - name: Install k3d
+        run: |
+          curl -fsSLo /tmp/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          chmod +x /tmp/k3d
+          sudo mv /tmp/k3d /usr/local/bin/k3d
+          k3d version
+      - run: make test-integration

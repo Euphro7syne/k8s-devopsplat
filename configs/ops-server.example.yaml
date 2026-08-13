@@ -25,6 +25,8 @@ kubernetes:
   namespace: ops-platform
 
 database:
+  # 可选 sqlite/sqlite3 或 postgres/postgresql。
+  # PostgreSQL 生产 DSN 应通过 OPS_DATABASE_DSN 注入，不写入配置文件。
   driver: sqlite
   dsn: "file:./data/ops-platform.db?_foreign_keys=1&_busy_timeout=5000"
   max_open_conns: 1
@@ -40,12 +42,21 @@ auth:
   jwt_secret: "change-me-placeholder"
   access_token_ttl: 15m
   refresh_token_ttl: 168h
+  # TOTP 登录硬开关：true 必须验证动态码；false 仅验证账号密码。
   mfa_enabled: false
   mfa_issuer: ops-platform
   mfa_challenge_ttl: 5m
   mfa_secret_key: "change-me-mfa-secret-key"
+  rate_limit:
+    enabled: true
+    login_max_attempts: 5
+    login_window: 5m
+    login_block_duration: 15m
+    mfa_max_attempts: 5
+    mfa_window: 5m
+    mfa_block_duration: 15m
   local_admin:
     enabled: true
     username: admin
     email: admin@example.com
-    password: "change-me-admin-password"
+    password: "admin123"

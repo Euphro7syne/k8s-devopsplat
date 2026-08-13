@@ -124,6 +124,21 @@ WHERE id = ?`, status, userID)
 	return nil
 }
 
+func (s *Store) UpdateUserPasswordHash(ctx context.Context, userID int64, passwordHash string) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE users
+SET password_hash = ?
+WHERE id = ?`, passwordHash, userID)
+	if err != nil {
+		return fmt.Errorf("update user password hash: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateUserMFASecret(ctx context.Context, userID int64, secret string) error {
 	result, err := s.db.ExecContext(ctx, `
 UPDATE users

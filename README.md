@@ -24,7 +24,7 @@
 | 节点 | 单节点 k3s | 平台部署 1 副本即可，不需要 HA |
 | Pod 数 | ~65 | 列表分页、Informer 缓存压力极小 |
 | Namespace | 4~6 个 | 不做多租户，只做角色分级 |
-| 并发用户 | 运维/开发若干 | SQLite 够用，接口响应无需缓存层 |
+| 并发用户 | 运维/开发若干 | 不引入缓存层；本地可用 SQLite，k3s 正式部署使用 PostgreSQL |
 | 日志量 | 中小 | Loki 单实例，保留 3~7 天 |
 
 ---
@@ -94,7 +94,7 @@
        │              │                │               │
        ▼              ▼                ▼               ▼
 ┌─────────────┐ ┌────────────┐ ┌──────────────┐ ┌──────────────┐
-│   k3s API   │ │ SQLite→PG  │ │ Fluent Bit→  │ │  Tekton      │
+│   k3s API   │ │ SQLite/PG  │ │ Fluent Bit→  │ │  Tekton      │
 │ in-cluster  │ │ 平台数据    │ │ Loki 日志     │ │  (P1 可选)    │
 │ ServiceAccount│ │ 配置版本/审计 │ │ (P1 可选)     │ │  (P1 可选)    │
 └─────────────┘ └────────────┘ └──────────────┘ └──────────────┘
@@ -113,7 +113,7 @@
 |---|---|---|
 | 后端 | **Go + Gin** + client-go + informer + gorilla/websocket | k8s 生态最成熟、单二进制、资源占用低（见参考文档） |
 | 前端 | **Vue 3 + Vite + Element Plus**（已确认） | 中后台生态成熟，配合 Pinia、vue-router、xterm.js |
-| 存储 | **SQLite**（MVP）→ PostgreSQL（可演进） | 通过 `internal/store` 接口隔离，DSN 切换即换库 |
+| 存储 | **SQLite + PostgreSQL** | `internal/store` 接口隔离；本地默认 SQLite，k3s 正式部署默认 PostgreSQL |
 | 日志采集 | **Fluent Bit**（DaemonSet） | 比 Fluentd 轻；日志量小时可先跳过，直接 K8s API 查 |
 | 日志存储 | **Loki** 单实例（P1） | 保留 3~7 天，限制资源、行截断 |
 | 监控数据 | **metrics-server**（P1） | 不做 Prometheus 全家桶，先满足 CPU/Memory 展示 |
@@ -139,9 +139,9 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 | 5 | 事件中心 + 告警 | 先做事件聚合展示 + 内置规则引擎（P1），webhook 通知；不做独立 alertmanager |
 | 6 | 应用发布（Tekton + 审批 + 回退/暂停） | 发布引擎抽象为 `Release` 状态机（pending→approving→running→paused→succeeded/failed/rolled_back），Tekton 作为可选执行后端，避免与 Tekton 强耦合 |
 | 7 | 配置中心 | 完全按参考文档的 App/Env/Item/Version/Release 模型；发布 = 渲染 ConfigMap/Secret → Apply → 打 annotation 触发滚动更新 |
-| 8 | RBAC | 平台内部五级角色，与 k8s RBAC 分离：平台权限在 SQLite 表，写 k8s 用平台自身的 ServiceAccount（ClusterRole 最小授权） |
+| 8 | RBAC | 平台内部五级角色，与 k8s RBAC 分离：平台权限落平台数据库，写 k8s 用平台自身的 ServiceAccount（ClusterRole 最小授权） |
 | 9 | 认证 | LDAP / email 登录 + JWT；MFA 用 TOTP（无额外组件）；企业微信登录走 OIDC provider 抽象（P1） |
-| 10 | 存储 | SQLite 起步；配置快照、审计、诊断记录全落库；`store` 接口隔离，PG 随时可切 |
+| 10 | 存储 | SQLite 与 PostgreSQL 双实现；配置快照、审计、诊断记录全落库；k3s 默认使用 PostgreSQL StatefulSet |
 
 ### 5.1 安全红线
 
@@ -157,7 +157,7 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 ### 6.1 认证与权限（`internal/auth`）
 
 - 登录：LDAP 绑定验证 / 本地 email + 密码；成功签发 JWT（短时效 + refresh）。
-- MFA：TOTP（RFC 6238）；平台可配置为全员强制，首次登录完成绑定验证后才签发 JWT；非强制模式可在安全设置中启停，Admin 可为丢失身份验证器的其他用户重置绑定。
+- MFA：TOTP（RFC 6238）；`auth.mfa_enabled=true` 时全员强制动态码并在首次登录完成绑定，`false` 时登录只校验账号密码；Admin 可为丢失身份验证器的其他用户重置绑定。
 - RBAC 角色与权限矩阵：
 
 | 能力 | Viewer | Operator | ConfigAdmin | Auditor | Admin |
@@ -171,7 +171,8 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 ### 6.2 资源管理（`internal/resources` + `internal/workload`）
 
 - 统一封装：list / get / create / update / delete / patch / yaml 导出。
-- Informer + 本地缓存支撑列表与统计；`resource_mapper` 建立 Pod↔Workload↔Service↔PVC 的关联（从 Pod OwnerReferences 反查）。
+- 当前详情接口已建立 Namespace/Node→Pod/顶层 Workload/关联资源、Pod↔Workload、Service↔Endpoint↔Pod、Ingress↔Service↔Pod 和 PVC↔PV↔Pod↔Workload 的只读关联；Namespace/Node 的 CPU/Memory/Pod 数据为 Capacity/Allocatable 和 Pod requests/limits 声明值，实时使用率留给 P1 metrics-server；后续用 Informer + 本地缓存和 `resource_mapper` 收敛重复 API 直查，不改变现有契约。
+- PVC→PV 校验 volumeName 与 claimRef，PV→PVC 校验 claimRef namespace/name/UID 并拒绝冲突的 PVC volumeName；容器挂载覆盖普通/init/ephemeral container 的 mount/device，CSI 等卷源只返回非敏感摘要。
 - 写操作（delete/scale/restart/edit）统一走 `internal/workload`，并在中间件层记审计。
 
 ### 6.3 配置中心（`internal/configcenter`）
@@ -220,11 +221,11 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 ### 6.8 审计（`internal/audit`，横切）
 
 - 中间件自动记录 REST 写操作；终端会话单独录流。
-- 存储：SQLite 表 + 录像文件目录（PVC），录像文件按会话 id 关联。
+- 存储：平台数据库 + 录像文件目录（PVC），录像文件按会话 id 关联。
 
 ---
 
-## 7. 数据模型（核心表，SQLite 起步）
+## 7. 数据模型（核心表，SQLite/PostgreSQL）
 
 ```sql
 -- 用户 / 角色 / 集群（多集群预留）
@@ -267,24 +268,40 @@ DELETE /api/v1/users/{id}/mfa?confirm=true  # Admin 重置他人 MFA
 # 资源
 GET  /api/v1/clusters            # 多集群预留（MVP 固定返回当前集群）
 GET  /api/v1/namespaces
+GET  /api/v1/namespaces/{ns}
 GET  /api/v1/nodes
+GET  /api/v1/nodes/{name}
 GET  /api/v1/resources/yaml?kind=&namespace=&name=
 GET  /api/v1/namespaces/{ns}/pods
 GET  /api/v1/namespaces/{ns}/pods/{pod}
 GET  /api/v1/namespaces/{ns}/pods/{pod}/logs
 GET  /api/v1/namespaces/{ns}/pods/{pod}/yaml
 DELETE /api/v1/namespaces/{ns}/pods/{pod}
+POST /api/v1/namespaces/{ns}/pods/{pod}/restart?confirm=true
 POST /api/v1/namespaces/{ns}/deployments/{name}/scale|restart|rollback
-GET  /api/v1/namespaces/{ns}/statefulsets
-GET  /api/v1/namespaces/{ns}/daemonsets
+GET  /api/v1/namespaces/{ns}/statefulsets[/{name}]
+GET  /api/v1/namespaces/{ns}/statefulsets/{name}/yaml
+POST /api/v1/namespaces/{ns}/statefulsets/{name}/scale|restart
+GET  /api/v1/namespaces/{ns}/daemonsets[/{name}]
+GET  /api/v1/namespaces/{ns}/daemonsets/{name}/yaml
+POST /api/v1/namespaces/{ns}/daemonsets/{name}/restart
 GET  /api/v1/namespaces/{ns}/replicasets
+GET  /api/v1/namespaces/{ns}/replicasets/{name}
 GET  /api/v1/namespaces/{ns}/jobs
+GET  /api/v1/namespaces/{ns}/jobs/{name}
 GET  /api/v1/namespaces/{ns}/cronjobs
+GET  /api/v1/namespaces/{ns}/cronjobs/{name}
+POST /api/v1/namespaces/{ns}/cronjobs/{name}/suspend?confirm=true
+POST /api/v1/namespaces/{ns}/cronjobs/{name}/resume?confirm=true
 GET  /api/v1/namespaces/{ns}/services
+GET  /api/v1/namespaces/{ns}/services/{name}
 GET  /api/v1/namespaces/{ns}/ingresses
+GET  /api/v1/namespaces/{ns}/ingresses/{name}
 GET  /api/v1/namespaces/{ns}/configmaps
 GET  /api/v1/namespaces/{ns}/persistentvolumeclaims
+GET  /api/v1/namespaces/{ns}/persistentvolumeclaims/{name}
 GET  /api/v1/persistentvolumes
+GET  /api/v1/persistentvolumes/{name}
 GET  /api/v1/storageclasses
 GET  /api/v1/namespaces/{ns}/events
 
@@ -340,7 +357,7 @@ ops-platform/
 │   ├── cluster/                  # 多集群抽象：注册表 + client 工厂（MVP 仅 in-cluster）
 │   ├── k8s/                      # client 构建、informer、dynamic client、kubeconfig 解析
 │   ├── resources/                # namespace/node/pod/service/ingress/pv/pvc/sc/cm/secret/event
-│   ├── workload/                 # deployment/sts/rs/ds/job/cronjob + scale/restart/rollback/exec
+│   ├── workload/                 # deployment/sts/ds/pod 的受控写操作与安全边界
 │   ├── configcenter/             # app/env/item/version/release/diff/rollback/sync_k8s
 │   ├── logquery/                 # source_kube.go / source_loki.go / filter / export
 │   ├── release/                  # 发布状态机 + executor(tekton/kubectl-image) + 审批
@@ -350,15 +367,15 @@ ops-platform/
 │   ├── asset/                    # 资产模型 / 授权 / ssh+rdp 网关 / 录像（P2）
 │   ├── terminal/                 # WebSSH、Pod exec、会话管理（录像接口）
 │   ├── audit/                    # 操作审计、会话录像元数据（横切）
-│   ├── store/                    # 存储接口 + sqlite/pg 实现 + migrations
+│   ├── store/                    # 存储接口 + sqlite/postgres 实现 + 方言迁移
 │   ├── model/                    # ORM/表结构
 │   └── pkg/                      # logger / errors / pagination / response / websocket / crypto
 ├── api/openapi/ops-platform.yaml
 ├── web/                          # Vue 3 + Vite + Element Plus
 │   └── src/{api,components,pages,router,stores,utils}
 ├── deploy/
-│   ├── k3s/                      # namespace/rbac/server/web/sqlite-pvc/ingress
-│   │                             #   + fluent-bit/loki/tekton/postgres/guacamole（按阶段加装）
+│   ├── k3s/                      # namespace/rbac/server/web/postgres/ingress
+│   │                             #   + optional/sqlite-pvc、fluent-bit/loki/tekton/guacamole（按需）
 │   └── helm/ops-platform/        # 可演进
 ├── configs/ops-server.example.yaml
 ├── scripts/{build,deploy,backup,restore}.sh
@@ -378,10 +395,10 @@ ops-platform/
 |---|---|---|---|---|
 | **ops-server** | Deployment ×1 | ops-platform | **P0 必选** | 后端主服务：资源/配置/日志/发布/审计/AI 全部 API；可内嵌前端静态资源 |
 | **ops-web** | Deployment ×1（或内嵌进 ops-server） | ops-platform | **P0 必选** | 前端控制台（Vue 3 静态资源 + Nginx/静态托管） |
-| **SQLite PVC** | PVC（local-path） | ops-platform | **P0 必选** | 平台数据：用户/角色/配置版本/发布记录/审计/诊断记录 |
+| **PostgreSQL** | StatefulSet ×1 + PVC | ops-platform | **P0 必选** | k3s 正式部署的平台数据：用户/角色/配置版本/发布记录/审计/诊断记录 |
+| SQLite PVC | PVC（local-path） | ops-platform | P0 可选 | 本地开发或轻量回退；默认 k3s 部署不安装 |
 | **平台 RBAC** | ServiceAccount + ClusterRole | ops-platform | **P0 必选** | 平台访问 k3s API 的最小权限（见 `deploy/k3s/rbac.yaml`） |
 | **Ingress（Traefik）** | k3s 自带组件 | kube-system | **P0 必选** | 对外 HTTPS 入口（k3s 默认已装，仅需配置） |
-| PostgreSQL | StatefulSet ×1 | ops-platform | P1 可选 | 替换 SQLite（数据量大/要更稳时），通过 `store` 接口切换 |
 | **Fluent Bit** | DaemonSet | ops-platform | **P1 可选** | 采集 `/var/log/containers/*.log`，带 k8s metadata 推送 Loki |
 | **Loki** | Deployment ×1 | ops-platform | **P1 可选** | 日志存储与查询，保留 3~7 天，单实例即可 |
 | **metrics-server** | Deployment | kube-system | P1 可选（k3s 默认已装） | 提供 Node/Pod 的 CPU/Memory，支撑容器监控页 |
@@ -393,7 +410,7 @@ ops-platform/
 **组件依赖关系**（决定启动顺序）：
 
 ```text
-ops-server ──▶ k3s API（必须）  +  SQLite/PG（必须）  +  [Loki：仅当 log.source=loki]
+ops-server ──▶ k3s API（必须）  +  PostgreSQL/SQLite（必须）  +  [Loki：仅当 log.source=loki]
 Fluent Bit ──▶ Loki（日志链路）
 ops-server ──▶ Tekton（仅当启用发布执行后端）
 ops-web   ──▶ ops-server（反向代理 /api、/ws）
@@ -403,12 +420,12 @@ Guacamole ──▶ ops-server（P2 远程网关，需先部署）
 **按阶段的最小组件组合**：
 
 ```text
-P0（MVP 闭环）：k3s + ops-server + ops-web + SQLite PVC + 平台 RBAC + Ingress
+P0（MVP 闭环）：k3s + ops-server + ops-web + PostgreSQL StatefulSet/PVC + 平台 RBAC + Ingress
 P1（正式版）  ：P0 + Fluent Bit + Loki + metrics-server [+ Tekton]
-P2（增强版）  ：P1 + Guacamole [+ PostgreSQL 可选]
+P2（增强版）  ：P1 + Guacamole
 ```
 
-> 组件对应的部署清单文件统一放在 `deploy/k3s/`（namespace、rbac、server、web、sqlite-pvc、ingress、fluent-bit、loki、tekton、postgres、guacamole 各一个 yaml），安装顺序按上表自上而下。
+> 默认组件清单位于 `deploy/k3s/`；SQLite PVC 等非默认组件位于 `deploy/k3s/optional/`，不会被普通的 `kubectl apply -f deploy/k3s` 自动安装。
 
 ### 10.1 部署形态决策：容器化（推荐）
 
@@ -421,7 +438,7 @@ P2（增强版）  ：P1 + Guacamole [+ PostgreSQL 可选]
 1. **权限模型天然契合**：平台用 in-cluster ServiceAccount + ClusterRole 访问 k3s API，无需管理 kubeconfig/证书，也没有外网暴露端口问题。
 2. **统一生命周期**：Deployment 滚动升级、回滚、自愈（重启）、资源配额，与业务应用同一套标准、同一套 `kubectl apply`。
 3. **运维同源**：Fluent Bit 采集日志天然覆盖平台自身日志——平台自己监控自己，不额外加探针。
-4. **备份统一**：平台数据（SQLite PVC）与业务存储同走一套 PVC/备份流程。
+4. **备份统一**：平台 PostgreSQL 数据使用 PVC 持久化，并通过 `pg_dump` 纳入主机侧备份流程。
 
 **平台「自己托管自己」的风险与对策：**
 
@@ -429,7 +446,7 @@ P2（增强版）  ：P1 + Guacamole [+ PostgreSQL 可选]
 |---|---|
 | 平台挂了没人能修 | Deployment 自愈自动重启；k3s 节点上 `kubectl` 永远可用，可手工 `kubectl -n ops-platform` 兜底 |
 | k3s 挂了平台也挂 | 单节点固有风险，**与部署形态无关**——主机部署同样依赖 k3s 活着；靠 k3s 数据备份 + 平台 DB 备份恢复（见第 12 节） |
-| 数据持久化 | SQLite 落在 local-path PVC（`/data/ops-platform`）；备份脚本放**主机 cron**，平台不可用时主机侧仍能恢复 |
+| 数据持久化 | PostgreSQL 使用独立 local-path PVC；`pg_dump` 备份任务放**主机 cron**并复制到节点外，平台不可用时仍能恢复 |
 | 平台吃光业务资源 | requests/limits 严格限制（见 10.4 资源配额参考），与业务同节点隔离由 k3s 调度保证 |
 | 启动依赖/循环 | ops-server 是普通 Deployment，k3s 就绪后自动调度，无强依赖顺序 |
 
@@ -442,7 +459,7 @@ P2（增强版）  ：P1 + Guacamole [+ PostgreSQL 可选]
 ```text
 ops-platform namespace
 ├── ops-server Deployment（1 副本，内嵌前端静态资源）
-├── sqlite PVC（/data/ops-platform.db）
+├── ops-postgres StatefulSet（单副本）+ PVC
 ├── ServiceAccount + ClusterRole（最小权限）
 └── Ingress（Traefik）或 NodePort
 ```
@@ -455,7 +472,7 @@ ops-platform namespace
 ├── ops-web Deployment（可选，若前后端分离）
 ├── fluent-bit DaemonSet
 ├── loki Deployment（单实例，保留 3~7 天）
-├── sqlite/postgres PVC
+├── PostgreSQL StatefulSet + PVC
 └── 可选：tekton-pipelines（独立 namespace，限制资源）
 ```
 
@@ -465,6 +482,7 @@ ops-platform namespace
 |---|---|---|
 | ops-server | 100m / 256Mi | 500m / 512Mi |
 | ops-web | 50m / 128Mi | 200m / 256Mi |
+| postgres | 100m / 256Mi | 500m / 512Mi |
 | fluent-bit | 50m / 64Mi | 200m / 256Mi |
 | loki | 100m / 256Mi | 500m / 768Mi |
 | tekton（若启用） | 控制面整体 ≤ 1C / 1Gi | 按需 |
@@ -485,7 +503,7 @@ ops-platform namespace
 ## 12. 备份与日常运维
 
 - **k3s 数据**：`/var/lib/rancher/k3s/server/db` 定时打包（或 `k3s etcd snapshot`，取决于 datastore 类型）。
-- **平台数据**：SQLite 用 `sqlite3 .backup`；PG 用 `pg_dump`；录像文件目录一并备份。
+- **平台数据**：PostgreSQL 用 `pg_dump`；本地 SQLite 用 `sqlite3 .backup`；录像文件目录一并备份。
 - **日志治理**：k3s(containerd) 配置容器日志轮转上限；Loki 保留 3~7 天；采集只选业务 namespace 并做行截断。
 - **磁盘规划**：`/`（系统）、`/var/lib/rancher/k3s`（k3s 数据）、`/data/ops-platform`（平台数据）、`/backup`（备份，建议独立盘或远程）。
 - **例行任务**：`scripts/backup.sh` + cron；恢复演练每季度一次。
@@ -496,7 +514,7 @@ ops-platform namespace
 
 | 阶段 | 内容 | 周期 |
 |---|---|---|
-| 0 | 工程骨架：go module、配置加载、SQLite 迁移、Makefile、CI、前端脚手架、统一响应/错误码 | 1~2 周 |
+| 0 | 工程骨架：go module、配置加载、SQLite/PostgreSQL 存储与迁移、Makefile、CI、前端脚手架、统一响应/错误码 | 1~2 周 |
 | 1（P0） | 认证/权限 + 资源管理 + Pod 日志 + 操作审计（MVP 闭环） | 3~6 周 |
 | 2（P1） | 配置中心：模型、发布、回滚、审计 | 4~6 周 |
 | 3（P1） | 应用发布：Tekton 集成、审批、回退/暂停（可与阶段 2 并行） | 3~5 周 |
@@ -526,12 +544,18 @@ cd web && npm install && npm run dev
 # 4. 迁移与初始化
 make migrate
 
-# 5. 构建与部署到 k3s
+# 5. 可选：使用临时 k3d 集群运行资源接口集成测试
+# 需要本机已安装并启动 Docker，同时提供 k3d、kubectl、curl。
+make test-integration
+
+# 6. 构建与部署到 k3s
 make build
 make deploy   # kubectl apply -f deploy/k3s
 ```
 
-常用命令见 Makefile：`make lint / test / build / image / migrate / backup / restore`。
+k3s 清单默认部署单副本 PostgreSQL StatefulSet；数据库凭据由 `deploy/k3s/server-secret.yaml` 注入。存储配置、迁移和备份说明见 `docs/storage.md` 与 `docs/backup.md`。
+
+常用命令见 Makefile：`make lint / test / test-integration / build / image / migrate / backup / restore`。
 
 ---
 
@@ -550,8 +574,12 @@ make deploy   # kubectl apply -f deploy/k3s
 
 - [docs/architecture.md](docs/architecture.md) — 架构详解与演进说明
 - [docs/auth.md](docs/auth.md) — 本地认证、JWT 与 TOTP MFA 流程
+- [docs/resources.md](docs/resources.md) — P0 资源详情关联、Pod 日志与受控工作负载操作
+- [docs/p0-status.md](docs/p0-status.md) — P0 五层覆盖矩阵、真实完成度与不遗漏开发顺序
+- [docs/development-checklist.md](docs/development-checklist.md) — 总体阶段、全部功能完成度、未完成项和固定开发顺序
 - [docs/rbac.md](docs/rbac.md) — 角色权限矩阵与 k8s 最小授权清单
 - [docs/config-center.md](docs/config-center.md) — 配置中心模型与发布流程
 - [docs/audit.md](docs/audit.md) — 审计、会话录像与合规设计
 - [docs/deployment.md](docs/deployment.md) — k3s 部署与升级
 - [docs/backup.md](docs/backup.md) — 备份与恢复
+- [docs/storage.md](docs/storage.md) — SQLite/PostgreSQL 驱动、迁移与切换

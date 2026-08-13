@@ -24,7 +24,9 @@ func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware gin.Ha
 
 	r.GET("/overview", append(readMW, h.overview)...)
 	r.GET("/namespaces", append(readMW, h.namespaces)...)
+	r.GET("/namespaces/:namespace", append(readMW, h.namespaceDetail)...)
 	r.GET("/nodes", append(readMW, h.nodes)...)
+	r.GET("/nodes/:name", append(readMW, h.nodeDetail)...)
 	r.GET("/resources/yaml", append(readMW, h.resourceYAML)...)
 	r.PUT("/resources/yaml", append(writeMW, h.updateResourceYAML)...)
 	r.GET("/namespaces/:namespace/pods", append(readMW, h.pods)...)
@@ -35,15 +37,26 @@ func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware gin.Ha
 	r.GET("/namespaces/:namespace/deployments/:name", append(readMW, h.deployment)...)
 	r.GET("/namespaces/:namespace/deployments/:name/yaml", append(readMW, h.deploymentYAML)...)
 	r.GET("/namespaces/:namespace/statefulsets", append(readMW, h.statefulSets)...)
+	r.GET("/namespaces/:namespace/statefulsets/:name", append(readMW, h.statefulSet)...)
+	r.GET("/namespaces/:namespace/statefulsets/:name/yaml", append(readMW, h.statefulSetYAML)...)
 	r.GET("/namespaces/:namespace/daemonsets", append(readMW, h.daemonSets)...)
+	r.GET("/namespaces/:namespace/daemonsets/:name", append(readMW, h.daemonSet)...)
+	r.GET("/namespaces/:namespace/daemonsets/:name/yaml", append(readMW, h.daemonSetYAML)...)
 	r.GET("/namespaces/:namespace/replicasets", append(readMW, h.replicaSets)...)
+	r.GET("/namespaces/:namespace/replicasets/:name", append(readMW, h.replicaSet)...)
 	r.GET("/namespaces/:namespace/jobs", append(readMW, h.jobs)...)
+	r.GET("/namespaces/:namespace/jobs/:name", append(readMW, h.job)...)
 	r.GET("/namespaces/:namespace/cronjobs", append(readMW, h.cronJobs)...)
+	r.GET("/namespaces/:namespace/cronjobs/:name", append(readMW, h.cronJob)...)
 	r.GET("/namespaces/:namespace/services", append(readMW, h.services)...)
+	r.GET("/namespaces/:namespace/services/:name", append(readMW, h.serviceDetail)...)
 	r.GET("/namespaces/:namespace/ingresses", append(readMW, h.ingresses)...)
+	r.GET("/namespaces/:namespace/ingresses/:name", append(readMW, h.ingressDetail)...)
 	r.GET("/namespaces/:namespace/configmaps", append(readMW, h.configMaps)...)
 	r.GET("/namespaces/:namespace/persistentvolumeclaims", append(readMW, h.pvcs)...)
+	r.GET("/namespaces/:namespace/persistentvolumeclaims/:name", append(readMW, h.pvcDetail)...)
 	r.GET("/persistentvolumes", append(readMW, h.pvs)...)
+	r.GET("/persistentvolumes/:name", append(readMW, h.pvDetail)...)
 	r.GET("/storageclasses", append(readMW, h.storageClasses)...)
 }
 
@@ -65,8 +78,26 @@ func (h *Handler) namespaces(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) namespaceDetail(c *gin.Context) {
+	result, err := h.service.GetNamespace(c.Request.Context(), c.Param("namespace"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *Handler) nodes(c *gin.Context) {
 	result, err := h.service.ListNodes(c.Request.Context(), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) nodeDetail(c *gin.Context) {
+	result, err := h.service.GetNode(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -102,7 +133,12 @@ func (h *Handler) podYAML(c *gin.Context) {
 }
 
 func (h *Handler) events(c *gin.Context) {
-	result, err := h.service.ListEvents(c.Request.Context(), c.Param("namespace"))
+	result, err := h.service.ListEvents(
+		c.Request.Context(),
+		c.Param("namespace"),
+		c.Query("involved_kind"),
+		c.Query("involved_name"),
+	)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -146,6 +182,24 @@ func (h *Handler) statefulSets(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) statefulSet(c *gin.Context) {
+	result, err := h.service.GetStatefulSet(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) statefulSetYAML(c *gin.Context) {
+	result, err := h.service.StatefulSetYAML(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, gin.H{"yaml": result})
+}
+
 func (h *Handler) daemonSets(c *gin.Context) {
 	result, err := h.service.ListDaemonSets(c.Request.Context(), c.Param("namespace"), parseListOptions(c))
 	if err != nil {
@@ -155,8 +209,35 @@ func (h *Handler) daemonSets(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) daemonSet(c *gin.Context) {
+	result, err := h.service.GetDaemonSet(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) daemonSetYAML(c *gin.Context) {
+	result, err := h.service.DaemonSetYAML(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, gin.H{"yaml": result})
+}
+
 func (h *Handler) replicaSets(c *gin.Context) {
 	result, err := h.service.ListReplicaSets(c.Request.Context(), c.Param("namespace"), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) replicaSet(c *gin.Context) {
+	result, err := h.service.GetReplicaSet(c.Request.Context(), c.Param("namespace"), c.Param("name"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -173,8 +254,26 @@ func (h *Handler) jobs(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) job(c *gin.Context) {
+	result, err := h.service.GetJob(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *Handler) cronJobs(c *gin.Context) {
 	result, err := h.service.ListCronJobs(c.Request.Context(), c.Param("namespace"), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) cronJob(c *gin.Context) {
+	result, err := h.service.GetCronJob(c.Request.Context(), c.Param("namespace"), c.Param("name"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -191,8 +290,26 @@ func (h *Handler) services(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) serviceDetail(c *gin.Context) {
+	result, err := h.service.GetService(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *Handler) ingresses(c *gin.Context) {
 	result, err := h.service.ListIngresses(c.Request.Context(), c.Param("namespace"), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) ingressDetail(c *gin.Context) {
+	result, err := h.service.GetIngress(c.Request.Context(), c.Param("namespace"), c.Param("name"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -218,8 +335,26 @@ func (h *Handler) pvcs(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *Handler) pvcDetail(c *gin.Context) {
+	result, err := h.service.GetPVC(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *Handler) pvs(c *gin.Context) {
 	result, err := h.service.ListPVs(c.Request.Context(), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) pvDetail(c *gin.Context) {
+	result, err := h.service.GetPV(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		response.Error(c, err)
 		return

@@ -25,6 +25,7 @@ paths:
   /auth/login:
     post:
       summary: Login with local email credentials
+      description: When auth.mfa_enabled is true, password validation is followed by mandatory TOTP enrollment or verification. When false, a valid password issues the JWT token pair without a TOTP challenge, even if the user already has an MFA binding.
       operationId: login
       requestBody:
         required: true
@@ -39,6 +40,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LoginEnvelope"
+        "429":
+          description: Too many failed login attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResponseEnvelope"
   /auth/refresh:
     post:
       summary: Refresh JWT token pair
@@ -90,6 +97,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LoginEnvelope"
+        "429":
+          description: Too many failed MFA verification attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResponseEnvelope"
   /auth/profile:
     get:
       summary: Current user profile
@@ -291,6 +304,26 @@ paths:
       responses:
         "200":
           description: Namespace list
+  /namespaces/{namespace}:
+    get:
+      summary: Get namespace resource associations and declared resource totals
+      description: Returns current Namespace metadata, resource counts, active Pod requests/limits, Pods, top-level Workloads, Services, Ingresses, PVCs and UID-filtered Events. Resource totals are Kubernetes declarations, not metrics-server usage.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "200":
+          description: Namespace detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/NamespaceDetail"
   /nodes:
     get:
       summary: List nodes
@@ -302,6 +335,26 @@ paths:
       responses:
         "200":
           description: Node page
+  /nodes/{name}:
+    get:
+      summary: Get node scheduling and declared resource detail
+      description: Returns Node conditions, roles, addresses, taints, system information, capacity/allocatable, effective requests/limits of non-terminal scheduled Pods, associated Pods/Workloads and UID-filtered Events. It does not report realtime CPU or memory usage.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Node detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/NodeDetail"
   /resources/yaml:
     get:
       summary: Export Kubernetes resource YAML
@@ -315,6 +368,7 @@ paths:
             type: string
             enum:
               - node
+              - namespace
               - pod
               - deployment
               - statefulset
@@ -367,7 +421,8 @@ paths:
           description: Pod page
   /namespaces/{namespace}/pods/{pod}:
     get:
-      summary: Get pod detail
+      summary: Get pod diagnostic detail
+      description: Returns runtime state, current and previous container termination details, owner references, resolved controller chain, conditions and scheduling/network metadata.
       security:
         - bearerAuth: []
       parameters:
@@ -376,6 +431,15 @@ paths:
       responses:
         "200":
           description: Pod detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PodDetail"
     delete:
       summary: Delete pod
       security:
@@ -393,7 +457,8 @@ paths:
           description: Delete request submitted
   /namespaces/{namespace}/pods/{pod}/logs:
     get:
-      summary: Query pod logs from Kubernetes API
+      summary: Query retained pod logs from Kubernetes API
+      description: Reads logs still retained by the node for the current container instance or its immediately previous instance. This is not durable cross-Pod history; P1 Loki provides long-term querying.
       security:
         - bearerAuth: []
       parameters:
@@ -419,9 +484,51 @@ paths:
           in: query
           schema:
             type: integer
+        - name: from
+          in: query
+          description: Return log entries at or after this RFC3339 timestamp.
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
           description: Log result
+  /namespaces/{namespace}/pods/{pod}/logs/follow:
+    get:
+      summary: Follow pod logs over WebSocket
+      description: Connect to /ws/v1 and stream Kubernetes follow=true logs. The client offers subprotocols ops-platform.logs.v1 and bearer.<access-token>; the server negotiates ops-platform.logs.v1. Previous container logs cannot be followed.
+      servers:
+        - url: /ws/v1
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+        - name: container
+          in: query
+          schema:
+            type: string
+        - name: keyword
+          in: query
+          schema:
+            type: string
+        - name: level
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Number of retained lines sent before following new lines.
+          schema:
+            type: integer
+            default: 200
+            maximum: 2000
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "101":
+          description: WebSocket stream established; messages use LogStreamMessage.
   /namespaces/{namespace}/pods/{pod}/yaml:
     get:
       summary: Export pod YAML
@@ -433,6 +540,22 @@ paths:
       responses:
         "200":
           description: Pod YAML
+  /namespaces/{namespace}/pods/{pod}/restart:
+    post:
+      summary: Restart a controller-managed pod by deleting it for recreation
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Pod"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Managed pod restart submitted
   /namespaces/{namespace}/deployments:
     get:
       summary: List deployments
@@ -448,6 +571,7 @@ paths:
   /namespaces/{namespace}/deployments/{name}:
     get:
       summary: Get deployment detail
+      description: Returns rollout strategy and conditions plus Deployment-owned ReplicaSets, their Pods, and related Deployment/ReplicaSet/Pod events.
       security:
         - bearerAuth: []
       parameters:
@@ -456,6 +580,15 @@ paths:
       responses:
         "200":
           description: Deployment detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DeploymentDetail"
   /namespaces/{namespace}/deployments/{name}/yaml:
     get:
       summary: Export deployment YAML
@@ -514,6 +647,63 @@ paths:
       responses:
         "200":
           description: StatefulSet page
+  /namespaces/{namespace}/statefulsets/{name}:
+    get:
+      summary: Get statefulset detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: StatefulSet detail
+  /namespaces/{namespace}/statefulsets/{name}/yaml:
+    get:
+      summary: Export statefulset YAML
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: StatefulSet YAML
+  /namespaces/{namespace}/statefulsets/{name}/scale:
+    post:
+      summary: Scale statefulset
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - replicas
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        "200":
+          description: StatefulSet scaled
+  /namespaces/{namespace}/statefulsets/{name}/restart:
+    post:
+      summary: Roll out a statefulset restart by annotating its pod template
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: StatefulSet restart submitted
   /namespaces/{namespace}/daemonsets:
     get:
       summary: List daemonsets
@@ -526,6 +716,42 @@ paths:
       responses:
         "200":
           description: DaemonSet page
+  /namespaces/{namespace}/daemonsets/{name}:
+    get:
+      summary: Get daemonset detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: DaemonSet detail
+  /namespaces/{namespace}/daemonsets/{name}/yaml:
+    get:
+      summary: Export daemonset YAML
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: DaemonSet YAML
+  /namespaces/{namespace}/daemonsets/{name}/restart:
+    post:
+      summary: Roll out a daemonset restart by annotating its pod template
+      description: DaemonSets using the OnDelete update strategy return HTTP 409 and must have their managed Pods restarted individually.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: DaemonSet restart submitted
+        "409":
+          description: DaemonSet uses the OnDelete update strategy
   /namespaces/{namespace}/replicasets:
     get:
       summary: List replicasets
@@ -538,6 +764,27 @@ paths:
       responses:
         "200":
           description: ReplicaSet page
+  /namespaces/{namespace}/replicasets/{name}:
+    get:
+      summary: Get replicaset detail
+      description: Returns the owning Deployment reference, selector, revision, conditions, directly owned Pods, and related ReplicaSet/Pod events. Direct ReplicaSet mutation remains disabled.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: ReplicaSet detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ReplicaSetDetail"
   /namespaces/{namespace}/jobs:
     get:
       summary: List jobs
@@ -550,6 +797,27 @@ paths:
       responses:
         "200":
           description: Job page
+  /namespaces/{namespace}/jobs/{name}:
+    get:
+      summary: Get job detail
+      description: Returns execution policy, status conditions, owning CronJob reference, directly owned Pods, and related Job/Pod events. Job deletion and rerun are intentionally not exposed; rerun requires creating a new Job with a new name.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Job detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/JobDetail"
   /namespaces/{namespace}/cronjobs:
     get:
       summary: List cronjobs
@@ -562,6 +830,61 @@ paths:
       responses:
         "200":
           description: CronJob page
+  /namespaces/{namespace}/cronjobs/{name}:
+    get:
+      summary: Get cronjob detail
+      description: Returns schedule policy, Job template policy, directly owned Jobs, descendant Pods, and related CronJob/Job/Pod events. Immediate run and deletion are intentionally not exposed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: CronJob detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CronJobDetail"
+  /namespaces/{namespace}/cronjobs/{name}/suspend:
+    post:
+      summary: Suspend future cronjob schedules
+      description: Sets spec.suspend=true. Already-started Jobs are not stopped. Requires operator/admin, explicit confirmation, and audit.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: CronJob suspended
+  /namespaces/{namespace}/cronjobs/{name}/resume:
+    post:
+      summary: Resume future cronjob schedules
+      description: Sets spec.suspend=false. Missed schedules are handled by Kubernetes according to startingDeadlineSeconds. Requires operator/admin, explicit confirmation, and audit.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: CronJob resumed
   /namespaces/{namespace}/services:
     get:
       summary: List services
@@ -574,6 +897,27 @@ paths:
       responses:
         "200":
           description: Service page
+  /namespaces/{namespace}/services/{name}:
+    get:
+      summary: Get service detail
+      description: Returns Service traffic policy and structured ports, EndpointSlice-backed endpoints with legacy Endpoints fallback, selector/targetRef-associated Pods, and related Service/endpoint/Pod events.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Service detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ServiceDetail"
   /namespaces/{namespace}/ingresses:
     get:
       summary: List ingresses
@@ -586,6 +930,27 @@ paths:
       responses:
         "200":
           description: Ingress page
+  /namespaces/{namespace}/ingresses/{name}:
+    get:
+      summary: Get ingress detail
+      description: Returns default and rule backends, TLS metadata, de-duplicated backend Service details, EndpointSlice-backed endpoints with legacy Endpoints fallback, associated Pods, and related Ingress/Service/endpoint/Pod events. Missing backend Services remain visible for diagnosis.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Ingress detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/IngressDetail"
   /namespaces/{namespace}/configmaps:
     get:
       summary: List configmaps
@@ -610,6 +975,26 @@ paths:
       responses:
         "200":
           description: PVC page
+  /namespaces/{namespace}/persistentvolumeclaims/{name}:
+    get:
+      summary: Get persistent volume claim storage associations
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: PVC detail with PV, Pod, workload, mount and Event associations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PVCDetail"
   /persistentvolumes:
     get:
       summary: List persistent volumes
@@ -621,6 +1006,25 @@ paths:
       responses:
         "200":
           description: PV page
+  /persistentvolumes/{name}:
+    get:
+      summary: Get persistent volume storage associations
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: PV detail with PVC, Pod, workload, mount and Event associations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PVDetail"
   /storageclasses:
     get:
       summary: List storage classes
@@ -639,6 +1043,14 @@ paths:
         - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/Namespace"
+        - name: involved_kind
+          in: query
+          schema:
+            type: string
+        - name: involved_name
+          in: query
+          schema:
+            type: string
       responses:
         "200":
           description: Event list
@@ -717,6 +1129,1112 @@ components:
           type: string
         data:
           nullable: true
+    NamespaceSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    NodeSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        cpu_allocatable:
+          type: string
+        memory_allocatable:
+          type: string
+        pods_allocatable:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ResourceReference:
+      type: object
+      properties:
+        kind:
+          type: string
+        namespace:
+          type: string
+        name:
+          type: string
+    DeclaredResources:
+      type: object
+      properties:
+        cpu:
+          type: string
+        memory:
+          type: string
+        ephemeral_storage:
+          type: string
+        pods:
+          type: integer
+    ResourceAllocation:
+      type: object
+      properties:
+        requests:
+          $ref: "#/components/schemas/DeclaredResources"
+        limits:
+          $ref: "#/components/schemas/DeclaredResources"
+        cpu_request_percent:
+          type: number
+          format: double
+        memory_request_percent:
+          type: number
+          format: double
+        pod_percent:
+          type: number
+          format: double
+    NamespaceResourceCounts:
+      type: object
+      properties:
+        pods:
+          type: integer
+        ready_pods:
+          type: integer
+        abnormal_pods:
+          type: integer
+        deployments:
+          type: integer
+        statefulsets:
+          type: integer
+        daemonsets:
+          type: integer
+        replicasets:
+          type: integer
+        jobs:
+          type: integer
+        cronjobs:
+          type: integer
+        services:
+          type: integer
+        ingresses:
+          type: integer
+        persistent_volume_claims:
+          type: integer
+        configmaps:
+          type: integer
+    NamespaceDetail:
+      allOf:
+        - $ref: "#/components/schemas/NamespaceSummary"
+        - type: object
+          properties:
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            finalizers:
+              type: array
+              items:
+                type: string
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodCondition"
+            counts:
+              $ref: "#/components/schemas/NamespaceResourceCounts"
+            allocated:
+              $ref: "#/components/schemas/ResourceAllocation"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            workloads:
+              type: array
+              items:
+                $ref: "#/components/schemas/ResourceReference"
+            services:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceSummary"
+            ingresses:
+              type: array
+              items:
+                $ref: "#/components/schemas/IngressSummary"
+            persistent_volume_claims:
+              type: array
+              items:
+                $ref: "#/components/schemas/PVCSummary"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    NodeAddressDetail:
+      type: object
+      properties:
+        type:
+          type: string
+        address:
+          type: string
+    NodeTaintDetail:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        effect:
+          type: string
+        time_added:
+          type: string
+          format: date-time
+    NodeConditionDetail:
+      type: object
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+        last_heartbeat_time:
+          type: string
+          format: date-time
+        last_transition_time:
+          type: string
+          format: date-time
+    NodeSystemInfo:
+      type: object
+      properties:
+        machine_id:
+          type: string
+        system_uuid:
+          type: string
+        boot_id:
+          type: string
+        kernel_version:
+          type: string
+        os_image:
+          type: string
+        container_runtime_version:
+          type: string
+        kubelet_version:
+          type: string
+        kube_proxy_version:
+          type: string
+        operating_system:
+          type: string
+        architecture:
+          type: string
+    NodeDetail:
+      allOf:
+        - $ref: "#/components/schemas/NodeSummary"
+        - type: object
+          properties:
+            roles:
+              type: array
+              items:
+                type: string
+            unschedulable:
+              type: boolean
+            pod_cidrs:
+              type: array
+              items:
+                type: string
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            addresses:
+              type: array
+              items:
+                $ref: "#/components/schemas/NodeAddressDetail"
+            taints:
+              type: array
+              items:
+                $ref: "#/components/schemas/NodeTaintDetail"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/NodeConditionDetail"
+            system_info:
+              $ref: "#/components/schemas/NodeSystemInfo"
+            capacity:
+              $ref: "#/components/schemas/DeclaredResources"
+            allocatable:
+              $ref: "#/components/schemas/DeclaredResources"
+            allocated:
+              $ref: "#/components/schemas/ResourceAllocation"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            workloads:
+              type: array
+              items:
+                $ref: "#/components/schemas/ResourceReference"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    OwnerReference:
+      type: object
+      required:
+        - kind
+        - name
+        - controller
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+        controller:
+          type: boolean
+    ContainerSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        ready:
+          type: boolean
+        restart_count:
+          type: integer
+          format: int32
+        state:
+          type: string
+        reason:
+          type: string
+        exit_code:
+          type: integer
+          format: int32
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        last_state:
+          type: string
+        last_reason:
+          type: string
+        last_exit_code:
+          type: integer
+          format: int32
+        last_finished_at:
+          type: string
+          format: date-time
+    PodSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        phase:
+          type: string
+        status:
+          type: string
+        node_name:
+          type: string
+        ready:
+          type: boolean
+        restart_count:
+          type: integer
+          format: int32
+        containers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerSummary"
+        created_at:
+          type: string
+          format: date-time
+    PodCondition:
+      type: object
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+    PodDetail:
+      allOf:
+        - $ref: "#/components/schemas/PodSummary"
+        - type: object
+          properties:
+            init_containers:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContainerSummary"
+            pod_ip:
+              type: string
+            host_ip:
+              type: string
+            qos_class:
+              type: string
+            service_account:
+              type: string
+            restart_policy:
+              type: string
+            start_time:
+              type: string
+              format: date-time
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            annotations:
+              type: object
+              additionalProperties:
+                type: string
+            owner_refs:
+              type: array
+              items:
+                $ref: "#/components/schemas/OwnerReference"
+            controller_chain:
+              type: array
+              items:
+                $ref: "#/components/schemas/OwnerReference"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodCondition"
+    WorkloadCondition:
+      type: object
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+        last_update_time:
+          type: string
+          format: date-time
+        last_transition_time:
+          type: string
+          format: date-time
+    EventSummary:
+      type: object
+      properties:
+        type:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+        count:
+          type: integer
+          format: int32
+        namespace:
+          type: string
+        involved_kind:
+          type: string
+        involved_name:
+          type: string
+        source:
+          type: string
+        first_timestamp:
+          type: string
+          format: date-time
+        last_timestamp:
+          type: string
+          format: date-time
+    DeploymentSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        replicas:
+          type: integer
+          format: int32
+        ready_replicas:
+          type: integer
+          format: int32
+        updated_replicas:
+          type: integer
+          format: int32
+        available_replicas:
+          type: integer
+          format: int32
+        unavailable_replicas:
+          type: integer
+          format: int32
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        images:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    WorkloadSummary:
+      type: object
+      properties:
+        kind:
+          type: string
+        namespace:
+          type: string
+        name:
+          type: string
+        replicas:
+          type: integer
+          format: int32
+        ready_replicas:
+          type: integer
+          format: int32
+        available_replicas:
+          type: integer
+          format: int32
+        unavailable_replicas:
+          type: integer
+          format: int32
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        images:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    ReplicaSetDetail:
+      allOf:
+        - $ref: "#/components/schemas/WorkloadSummary"
+        - type: object
+          properties:
+            revision:
+              type: string
+            current_replicas:
+              type: integer
+              format: int32
+            fully_labeled_replicas:
+              type: integer
+              format: int32
+            observed_generation:
+              type: integer
+              format: int64
+            min_ready_seconds:
+              type: integer
+              format: int32
+            selector:
+              type: object
+              additionalProperties:
+                type: string
+            owner:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/OwnerReference"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkloadCondition"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    DeploymentDetail:
+      allOf:
+        - $ref: "#/components/schemas/DeploymentSummary"
+        - type: object
+          properties:
+            generation:
+              type: integer
+              format: int64
+            observed_generation:
+              type: integer
+              format: int64
+            paused:
+              type: boolean
+            strategy:
+              type: string
+            max_surge:
+              type: string
+            max_unavailable:
+              type: string
+            min_ready_seconds:
+              type: integer
+              format: int32
+            progress_deadline_seconds:
+              type: integer
+              format: int32
+            revision_history_limit:
+              type: integer
+              format: int32
+            selector:
+              type: object
+              additionalProperties:
+                type: string
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkloadCondition"
+            replica_sets:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReplicaSetDetail"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    JobSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        completions:
+          type: integer
+          format: int32
+        succeeded:
+          type: integer
+          format: int32
+        failed:
+          type: integer
+          format: int32
+        active:
+          type: integer
+          format: int32
+        start_time:
+          type: string
+          format: date-time
+        completion_time:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    JobDetail:
+      allOf:
+        - $ref: "#/components/schemas/JobSummary"
+        - type: object
+          properties:
+            parallelism:
+              type: integer
+              format: int32
+            backoff_limit:
+              type: integer
+              format: int32
+            active_deadline_seconds:
+              type: integer
+              format: int64
+            ttl_seconds_after_finished:
+              type: integer
+              format: int32
+            completion_mode:
+              type: string
+            suspend:
+              type: boolean
+            manual_selector:
+              type: boolean
+            selector:
+              type: object
+              additionalProperties:
+                type: string
+            owner:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/OwnerReference"
+            images:
+              type: array
+              items:
+                type: string
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkloadCondition"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    CronJobSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        schedule:
+          type: string
+        suspend:
+          type: boolean
+        active:
+          type: integer
+        last_schedule_time:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    JobTemplatePolicy:
+      type: object
+      properties:
+        parallelism:
+          type: integer
+          format: int32
+        completions:
+          type: integer
+          format: int32
+        backoff_limit:
+          type: integer
+          format: int32
+        active_deadline_seconds:
+          type: integer
+          format: int64
+        ttl_seconds_after_finished:
+          type: integer
+          format: int32
+        completion_mode:
+          type: string
+        suspend:
+          type: boolean
+        restart_policy:
+          type: string
+        images:
+          type: array
+          items:
+            type: string
+    CronJobDetail:
+      allOf:
+        - $ref: "#/components/schemas/CronJobSummary"
+        - type: object
+          properties:
+            time_zone:
+              type: string
+            concurrency_policy:
+              type: string
+            starting_deadline_seconds:
+              type: integer
+              format: int64
+            successful_jobs_history_limit:
+              type: integer
+              format: int32
+            failed_jobs_history_limit:
+              type: integer
+              format: int32
+            last_successful_time:
+              type: string
+              format: date-time
+            job_template:
+              $ref: "#/components/schemas/JobTemplatePolicy"
+            jobs:
+              type: array
+              items:
+                $ref: "#/components/schemas/JobDetail"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    ServiceSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        cluster_ip:
+          type: string
+        external_ip:
+          type: string
+        ports:
+          type: array
+          items:
+            type: string
+        selector:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    ServicePortDetail:
+      type: object
+      properties:
+        name:
+          type: string
+        protocol:
+          type: string
+        port:
+          type: integer
+          format: int32
+        target_port:
+          type: string
+        node_port:
+          type: integer
+          format: int32
+        app_protocol:
+          type: string
+    ServiceEndpoint:
+      type: object
+      properties:
+        source:
+          type: string
+          enum:
+            - EndpointSlice
+            - Endpoints
+        source_name:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        ready:
+          type: boolean
+        serving:
+          type: boolean
+        terminating:
+          type: boolean
+        hostname:
+          type: string
+        node_name:
+          type: string
+        zone:
+          type: string
+        target_kind:
+          type: string
+        target_name:
+          type: string
+        ports:
+          type: array
+          items:
+            type: string
+    ServiceDetail:
+      allOf:
+        - $ref: "#/components/schemas/ServiceSummary"
+        - type: object
+          properties:
+            cluster_ips:
+              type: array
+              items:
+                type: string
+            external_name:
+              type: string
+            ip_families:
+              type: array
+              items:
+                type: string
+            ip_family_policy:
+              type: string
+            session_affinity:
+              type: string
+            external_traffic_policy:
+              type: string
+            internal_traffic_policy:
+              type: string
+            publish_not_ready_addresses:
+              type: boolean
+            load_balancer_source_ranges:
+              type: array
+              items:
+                type: string
+            port_details:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServicePortDetail"
+            endpoint_source:
+              type: string
+            endpoints:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceEndpoint"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    IngressSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        class_name:
+          type: string
+        hosts:
+          type: array
+          items:
+            type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        tls:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    IngressBackendDetail:
+      type: object
+      properties:
+        host:
+          type: string
+        path:
+          type: string
+        path_type:
+          type: string
+        is_default:
+          type: boolean
+        backend_kind:
+          type: string
+        backend_api_group:
+          type: string
+        backend_name:
+          type: string
+        backend_port:
+          type: string
+        service_found:
+          type: boolean
+        service_port_found:
+          type: boolean
+    IngressTLSDetail:
+      type: object
+      properties:
+        hosts:
+          type: array
+          items:
+            type: string
+        secret_name:
+          type: string
+    IngressDetail:
+      allOf:
+        - $ref: "#/components/schemas/IngressSummary"
+        - type: object
+          properties:
+            backends:
+              type: array
+              items:
+                $ref: "#/components/schemas/IngressBackendDetail"
+            tls_details:
+              type: array
+              items:
+                $ref: "#/components/schemas/IngressTLSDetail"
+            services:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceDetail"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    PVCSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        storage_class:
+          type: string
+        volume_name:
+          type: string
+        requested:
+          type: string
+        capacity:
+          type: string
+        access_modes:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    PVSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        storage_class:
+          type: string
+        capacity:
+          type: string
+        claim_namespace:
+          type: string
+        claim_name:
+          type: string
+        reclaim_policy:
+          type: string
+        access_modes:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    VolumeDataSource:
+      type: object
+      properties:
+        api_group:
+          type: string
+        kind:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+    VolumeMountDetail:
+      type: object
+      properties:
+        pod_namespace:
+          type: string
+        pod_name:
+          type: string
+        volume_name:
+          type: string
+        container_type:
+          type: string
+          enum:
+            - Container
+            - InitContainer
+            - EphemeralContainer
+        container_name:
+          type: string
+        mount_path:
+          type: string
+        device_path:
+          type: string
+        sub_path:
+          type: string
+        read_only:
+          type: boolean
+    PVCDetail:
+      allOf:
+        - $ref: "#/components/schemas/PVCSummary"
+        - type: object
+          properties:
+            volume_mode:
+              type: string
+            selector:
+              type: object
+              additionalProperties:
+                type: string
+            selector_expressions:
+              type: array
+              items:
+                type: string
+            data_source:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/VolumeDataSource"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodCondition"
+            pv:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/PVSummary"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            workloads:
+              type: array
+              items:
+                $ref: "#/components/schemas/OwnerReference"
+            mounts:
+              type: array
+              items:
+                $ref: "#/components/schemas/VolumeMountDetail"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    PVDetail:
+      allOf:
+        - $ref: "#/components/schemas/PVSummary"
+        - type: object
+          properties:
+            volume_mode:
+              type: string
+            mount_options:
+              type: array
+              items:
+                type: string
+            node_affinity:
+              type: array
+              items:
+                type: string
+            volume_source_type:
+              type: string
+            volume_source_info:
+              type: object
+              additionalProperties:
+                type: string
+            pvc:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/PVCSummary"
+            pods:
+              type: array
+              items:
+                $ref: "#/components/schemas/PodSummary"
+            workloads:
+              type: array
+              items:
+                $ref: "#/components/schemas/OwnerReference"
+            mounts:
+              type: array
+              items:
+                $ref: "#/components/schemas/VolumeMountDetail"
+            events:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventSummary"
+    LogStreamMessage:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - ready
+            - line
+            - error
+            - complete
+        line:
+          type: object
+          properties:
+            raw:
+              type: string
+        code:
+          type: integer
+        message:
+          type: string
     HealthEnvelope:
       allOf:
         - $ref: "#/components/schemas/ResponseEnvelope"
@@ -954,8 +2472,10 @@ components:
       properties:
         enabled:
           type: boolean
+          description: Whether the current user has a stored TOTP binding
         required:
           type: boolean
+          description: Whether auth.mfa_enabled currently requires TOTP during login
     LoginEnvelope:
       allOf:
         - $ref: "#/components/schemas/ResponseEnvelope"

@@ -32,10 +32,10 @@ data:
       namespace: ops-platform
 
     database:
-      driver: sqlite
-      dsn: "file:/data/ops-platform.db?_foreign_keys=1&_busy_timeout=5000"
-      max_open_conns: 1
-      max_idle_conns: 1
+      driver: postgres
+      dsn: "set-by-OPS_DATABASE_DSN"
+      max_open_conns: 10
+      max_idle_conns: 5
       auto_migrate: true
 
     log:
@@ -47,12 +47,21 @@ data:
       jwt_secret: "change-me-placeholder"
       access_token_ttl: 15m
       refresh_token_ttl: 168h
-      mfa_enabled: false
+      # TOTP 登录硬开关：true 必须验证动态码；false 仅验证账号密码。
+      mfa_enabled: true
       mfa_issuer: ops-platform
       mfa_challenge_ttl: 5m
       mfa_secret_key: "change-me-mfa-secret-key"
+      rate_limit:
+        enabled: true
+        login_max_attempts: 5
+        login_window: 5m
+        login_block_duration: 15m
+        mfa_max_attempts: 5
+        mfa_window: 5m
+        mfa_block_duration: 15m
       local_admin:
         enabled: true
         username: admin
         email: admin@example.com
-        password: "change-me-admin-password"
+        password: "admin123"

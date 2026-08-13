@@ -259,6 +259,19 @@ func BearerToken(header string) (string, error) {
 	return parts[1], nil
 }
 
+func WebSocketBearerToken(protocolHeader string) (string, error) {
+	for _, protocol := range strings.Split(protocolHeader, ",") {
+		protocol = strings.TrimSpace(protocol)
+		if strings.HasPrefix(protocol, "bearer.") {
+			token := strings.TrimSpace(strings.TrimPrefix(protocol, "bearer."))
+			if token != "" {
+				return token, nil
+			}
+		}
+	}
+	return "", apperrors.New(apperrors.CodeUnauthenticated, "websocket bearer protocol is required", 401)
+}
+
 func IsUnauthenticated(err error) bool {
 	var appErr *apperrors.AppError
 	return errors.As(err, &appErr) && appErr.Code == apperrors.CodeUnauthenticated

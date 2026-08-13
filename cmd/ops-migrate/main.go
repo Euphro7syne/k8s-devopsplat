@@ -8,7 +8,7 @@ import (
 
 	"ops-platform/internal/config"
 	"ops-platform/internal/pkg/logger"
-	"ops-platform/internal/store/sqlite"
+	storefactory "ops-platform/internal/store/factory"
 )
 
 func main() {
@@ -21,7 +21,7 @@ func main() {
 	}
 
 	appLogger := logger.New(cfg.Log)
-	store, err := sqlite.Open(context.Background(), cfg.Database, appLogger)
+	store, err := storefactory.Open(context.Background(), cfg.Database, appLogger)
 	if err != nil {
 		appLogger.Error("open store failed", "error", err)
 		os.Exit(1)

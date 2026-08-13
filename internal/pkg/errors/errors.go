@@ -19,6 +19,7 @@ const (
 
 	CodeUnauthenticated  Code = 20001
 	CodePermissionDenied Code = 20002
+	CodeRateLimited      Code = 20003
 
 	CodeKubernetesUnavailable Code = 30001
 

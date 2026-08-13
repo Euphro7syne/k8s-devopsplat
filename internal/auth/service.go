@@ -27,6 +27,7 @@ type Service struct {
 	tokens  *TokenManager
 	totp    *TOTP
 	secrets *MFASecretCipher
+	limiter *authRateLimiter
 }
 
 type LoginRequest struct {
@@ -103,12 +104,14 @@ func NewService(store store.AuthStore, cfg config.AuthConfig) *Service {
 			cfg.MFASecretKey = "change-me-mfa-secret-key"
 		}
 	}
+	cfg.RateLimit = cfg.RateLimit.WithDefaults()
 	return &Service{
 		store:   store,
 		cfg:     cfg,
 		tokens:  NewTokenManager(cfg),
 		totp:    NewTOTP(cfg.MFAIssuer),
 		secrets: NewMFASecretCipher(cfg.MFASecretKey),
+		limiter: newAuthRateLimiter(cfg.RateLimit),
 	}
 }
 
@@ -120,8 +123,20 @@ func (s *Service) BootstrapAdmin(ctx context.Context) error {
 	if email == "" || s.cfg.LocalAdmin.Password == "" {
 		return fmt.Errorf("local admin email and password are required")
 	}
-	if _, err := s.store.GetUserByEmail(ctx, email); err == nil {
-		return nil
+	if user, err := s.store.GetUserByEmail(ctx, email); err == nil {
+		if user.Provider != "local" {
+			return fmt.Errorf("local admin email %q belongs to provider %q", email, user.Provider)
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(s.cfg.LocalAdmin.Password)) != nil {
+			hash, hashErr := bcrypt.GenerateFromPassword([]byte(s.cfg.LocalAdmin.Password), bcrypt.DefaultCost)
+			if hashErr != nil {
+				return fmt.Errorf("hash local admin password: %w", hashErr)
+			}
+			if updateErr := s.store.UpdateUserPasswordHash(ctx, user.ID, string(hash)); updateErr != nil {
+				return fmt.Errorf("sync local admin password: %w", updateErr)
+			}
+		}
+		return s.store.AssignRoleByName(ctx, user.ID, "admin")
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
@@ -144,7 +159,28 @@ func (s *Service) BootstrapAdmin(ctx context.Context) error {
 }
 
 func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResponse, error) {
+	return s.LoginWithSource(ctx, req, "")
+}
+
+func (s *Service) LoginWithSource(ctx context.Context, req LoginRequest, sourceIP string) (LoginResponse, error) {
 	email := strings.TrimSpace(strings.ToLower(req.Email))
+	keys := s.limiter.loginKeys(sourceIP, email)
+	if s.limiter.blocked(keys) {
+		return LoginResponse{}, rateLimitedError()
+	}
+
+	result, err := s.login(ctx, req, email)
+	if err != nil {
+		if IsUnauthenticated(err) && s.limiter.recordFailure(keys, s.limiter.login) {
+			return LoginResponse{}, rateLimitedError()
+		}
+		return LoginResponse{}, err
+	}
+	s.limiter.reset(keys)
+	return result, nil
+}
+
+func (s *Service) login(ctx context.Context, req LoginRequest, email string) (LoginResponse, error) {
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -158,7 +194,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResponse, e
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "invalid email or password", http.StatusUnauthorized)
 	}
-	if s.mfaRequired(*user) {
+	if s.mfaRequired() {
 		purpose := mfaPurposeVerify
 		if user.MFASecret == "" {
 			purpose = mfaPurposeEnroll
@@ -183,13 +219,15 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (LoginRespon
 	if user.Status != "active" {
 		return LoginResponse{}, apperrors.New(apperrors.CodePermissionDenied, "user is disabled", http.StatusForbidden)
 	}
-	if s.cfg.MFAEnabled && user.MFASecret == "" {
-		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+	if s.cfg.MFAEnabled {
+		if user.MFASecret == "" {
+			return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+		}
+		if !principal.MFAVerified {
+			return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
+		}
 	}
-	if user.MFASecret != "" && !principal.MFAVerified {
-		return LoginResponse{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
-	}
-	return s.issueForUser(*user, principal.MFAVerified && user.MFASecret != "")
+	return s.issueForUser(*user, s.cfg.MFAEnabled && principal.MFAVerified && user.MFASecret != "")
 }
 
 func (s *Service) ParseAccessToken(token string) (Principal, error) {
@@ -211,13 +249,15 @@ func (s *Service) AuthenticateAccessToken(ctx context.Context, token string) (Pr
 	if user.Status != "active" {
 		return Principal{}, apperrors.New(apperrors.CodePermissionDenied, "user is disabled", http.StatusForbidden)
 	}
-	if s.cfg.MFAEnabled && user.MFASecret == "" {
-		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+	if s.cfg.MFAEnabled {
+		if user.MFASecret == "" {
+			return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa enrollment required", http.StatusUnauthorized)
+		}
+		if !principal.MFAVerified {
+			return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
+		}
 	}
-	if user.MFASecret != "" && !principal.MFAVerified {
-		return Principal{}, apperrors.New(apperrors.CodeUnauthenticated, "mfa verification required", http.StatusUnauthorized)
-	}
-	return principalForUser(*user, principal.MFAVerified && user.MFASecret != ""), nil
+	return principalForUser(*user, s.cfg.MFAEnabled && principal.MFAVerified && user.MFASecret != ""), nil
 }
 
 func (s *Service) SetupMFA(ctx context.Context, mfaToken string) (MFASetupResponse, error) {
@@ -250,7 +290,24 @@ func (s *Service) StartMFAEnrollment(ctx context.Context, userID int64) (MFASetu
 }
 
 func (s *Service) VerifyMFA(ctx context.Context, req MFAVerifyRequest) (LoginResponse, error) {
-	return s.verifyMFAChallenge(ctx, 0, req)
+	return s.VerifyMFAWithSource(ctx, req, "")
+}
+
+func (s *Service) VerifyMFAWithSource(ctx context.Context, req MFAVerifyRequest, sourceIP string) (LoginResponse, error) {
+	keys := s.limiter.mfaKeys(sourceIP, req.MFAToken)
+	if s.limiter.blocked(keys) {
+		return LoginResponse{}, rateLimitedError()
+	}
+
+	result, err := s.verifyMFAChallenge(ctx, 0, req)
+	if err != nil {
+		if IsUnauthenticated(err) && s.limiter.recordFailure(keys, s.limiter.mfa) {
+			return LoginResponse{}, rateLimitedError()
+		}
+		return LoginResponse{}, err
+	}
+	s.limiter.reset(keys)
+	return result, nil
 }
 
 func (s *Service) EnableMFA(ctx context.Context, userID int64, req MFAVerifyRequest) (LoginResponse, error) {
@@ -529,8 +586,12 @@ func (s *Service) activeUser(ctx context.Context, userID int64) (*model.User, er
 	return user, nil
 }
 
-func (s *Service) mfaRequired(user model.User) bool {
-	return s.cfg.MFAEnabled || user.MFASecret != ""
+func (s *Service) mfaRequired() bool {
+	return s.cfg.MFAEnabled
+}
+
+func rateLimitedError() error {
+	return apperrors.New(apperrors.CodeRateLimited, "too many authentication attempts; try again later", http.StatusTooManyRequests)
 }
 
 func principalForUser(user model.User, mfaVerified bool) Principal {

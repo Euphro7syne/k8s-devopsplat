@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -51,15 +52,26 @@ type LogConfig struct {
 }
 
 type AuthConfig struct {
-	JWTIssuer       string           `yaml:"jwt_issuer"`
-	JWTSecret       string           `yaml:"jwt_secret"`
-	AccessTokenTTL  time.Duration    `yaml:"access_token_ttl"`
-	RefreshTokenTTL time.Duration    `yaml:"refresh_token_ttl"`
-	MFAEnabled      bool             `yaml:"mfa_enabled"`
-	MFAIssuer       string           `yaml:"mfa_issuer"`
-	MFAChallengeTTL time.Duration    `yaml:"mfa_challenge_ttl"`
-	MFASecretKey    string           `yaml:"mfa_secret_key"`
-	LocalAdmin      LocalAdminConfig `yaml:"local_admin"`
+	JWTIssuer       string              `yaml:"jwt_issuer"`
+	JWTSecret       string              `yaml:"jwt_secret"`
+	AccessTokenTTL  time.Duration       `yaml:"access_token_ttl"`
+	RefreshTokenTTL time.Duration       `yaml:"refresh_token_ttl"`
+	MFAEnabled      bool                `yaml:"mfa_enabled"`
+	MFAIssuer       string              `yaml:"mfa_issuer"`
+	MFAChallengeTTL time.Duration       `yaml:"mfa_challenge_ttl"`
+	MFASecretKey    string              `yaml:"mfa_secret_key"`
+	RateLimit       AuthRateLimitConfig `yaml:"rate_limit"`
+	LocalAdmin      LocalAdminConfig    `yaml:"local_admin"`
+}
+
+type AuthRateLimitConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	LoginMaxAttempts   int           `yaml:"login_max_attempts"`
+	LoginWindow        time.Duration `yaml:"login_window"`
+	LoginBlockDuration time.Duration `yaml:"login_block_duration"`
+	MFAMaxAttempts     int           `yaml:"mfa_max_attempts"`
+	MFAWindow          time.Duration `yaml:"mfa_window"`
+	MFABlockDuration   time.Duration `yaml:"mfa_block_duration"`
 }
 
 type LocalAdminConfig struct {
@@ -108,14 +120,50 @@ func Default() Config {
 			MFAIssuer:       "ops-platform",
 			MFAChallengeTTL: 5 * time.Minute,
 			MFASecretKey:    "change-me-mfa-secret-key",
+			RateLimit:       DefaultAuthRateLimitConfig(),
 			LocalAdmin: LocalAdminConfig{
 				Enabled:  true,
 				Username: "admin",
 				Email:    "admin@example.com",
-				Password: "change-me-admin-password",
+				Password: "admin123",
 			},
 		},
 	}
+}
+
+func DefaultAuthRateLimitConfig() AuthRateLimitConfig {
+	return AuthRateLimitConfig{
+		Enabled:            true,
+		LoginMaxAttempts:   5,
+		LoginWindow:        5 * time.Minute,
+		LoginBlockDuration: 15 * time.Minute,
+		MFAMaxAttempts:     5,
+		MFAWindow:          5 * time.Minute,
+		MFABlockDuration:   15 * time.Minute,
+	}
+}
+
+func (c AuthRateLimitConfig) WithDefaults() AuthRateLimitConfig {
+	defaults := DefaultAuthRateLimitConfig()
+	if c.LoginMaxAttempts <= 0 {
+		c.LoginMaxAttempts = defaults.LoginMaxAttempts
+	}
+	if c.LoginWindow <= 0 {
+		c.LoginWindow = defaults.LoginWindow
+	}
+	if c.LoginBlockDuration <= 0 {
+		c.LoginBlockDuration = defaults.LoginBlockDuration
+	}
+	if c.MFAMaxAttempts <= 0 {
+		c.MFAMaxAttempts = defaults.MFAMaxAttempts
+	}
+	if c.MFAWindow <= 0 {
+		c.MFAWindow = defaults.MFAWindow
+	}
+	if c.MFABlockDuration <= 0 {
+		c.MFABlockDuration = defaults.MFABlockDuration
+	}
+	return c
 }
 
 func Load(path string) (*Config, error) {
@@ -139,6 +187,12 @@ func Load(path string) (*Config, error) {
 func applyEnvironmentOverrides(cfg *Config) {
 	if cfg == nil {
 		return
+	}
+	if value := os.Getenv("OPS_DATABASE_DRIVER"); value != "" {
+		cfg.Database.Driver = value
+	}
+	if value := os.Getenv("OPS_DATABASE_DSN"); value != "" {
+		cfg.Database.DSN = value
 	}
 	if value := os.Getenv("OPS_AUTH_JWT_SECRET"); value != "" {
 		cfg.Auth.JWTSecret = value
@@ -190,8 +244,29 @@ func (c Config) Validate() error {
 	if c.Auth.MFASecretKey == "" {
 		return fmt.Errorf("auth.mfa_secret_key is required")
 	}
-	switch c.Database.Driver {
+	if c.Auth.RateLimit.Enabled {
+		if c.Auth.RateLimit.LoginMaxAttempts <= 0 {
+			return fmt.Errorf("auth.rate_limit.login_max_attempts must be positive")
+		}
+		if c.Auth.RateLimit.LoginWindow <= 0 {
+			return fmt.Errorf("auth.rate_limit.login_window must be positive")
+		}
+		if c.Auth.RateLimit.LoginBlockDuration <= 0 {
+			return fmt.Errorf("auth.rate_limit.login_block_duration must be positive")
+		}
+		if c.Auth.RateLimit.MFAMaxAttempts <= 0 {
+			return fmt.Errorf("auth.rate_limit.mfa_max_attempts must be positive")
+		}
+		if c.Auth.RateLimit.MFAWindow <= 0 {
+			return fmt.Errorf("auth.rate_limit.mfa_window must be positive")
+		}
+		if c.Auth.RateLimit.MFABlockDuration <= 0 {
+			return fmt.Errorf("auth.rate_limit.mfa_block_duration must be positive")
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Database.Driver)) {
 	case "sqlite", "sqlite3":
+	case "postgres", "postgresql":
 	default:
 		return fmt.Errorf("unsupported database.driver %q", c.Database.Driver)
 	}

@@ -11,8 +11,13 @@
 - `POST /api/v1/auth/mfa/enable`
 - `POST /api/v1/auth/mfa/disable`
 - `DELETE /api/v1/users/{id}/mfa`
+- `PUT /api/v1/resources/yaml`
 - `DELETE /api/v1/namespaces/{namespace}/pods/{pod}`
+- `POST /api/v1/namespaces/{namespace}/pods/{pod}/restart`
 - `POST /api/v1/namespaces/{namespace}/deployments/{name}/scale`
 - `POST /api/v1/namespaces/{namespace}/deployments/{name}/restart`
+- `POST /api/v1/namespaces/{namespace}/statefulsets/{name}/scale`
+- `POST /api/v1/namespaces/{namespace}/statefulsets/{name}/restart`
+- `POST /api/v1/namespaces/{namespace}/daemonsets/{name}/restart`
 
 审计查询：`GET /api/v1/audit/logs`，仅 `auditor` / `admin` 可访问。请求体会经过 sanitizer，`password/token/secret/authorization/api_key/private_key` 以及 MFA 动态码等字段会打码。

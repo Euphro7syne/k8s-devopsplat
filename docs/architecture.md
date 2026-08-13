@@ -1,15 +1,15 @@
 # 架构说明
 
-阶段 0 只落工程骨架：Go 模块化单体、Vue 控制台、SQLite 存储接口、统一响应与错误码。
+阶段 0 只落工程骨架：Go 模块化单体、Vue 控制台、存储接口、统一响应与错误码。存储层目前实现 SQLite 与 PostgreSQL 两种驱动，本地默认 SQLite，k3s 正式部署默认 PostgreSQL。
 
 后续模块继续按 `handler -> service -> store` 分层推进，跨模块依赖收敛到 `internal/server` 路由与 `internal/store` 接口。
 
 阶段 1 MVP 资源运维链路：
 
 - `internal/auth`：本地 email 登录、JWT access/refresh、RFC 6238 TOTP 绑定与验证、角色校验，以及 Admin-only 用户/角色/MFA 重置管理。
-- `internal/resources`：Namespace、Node、Pod、Deployment、StatefulSet、ReplicaSet、DaemonSet、Job、CronJob、Service、Ingress、ConfigMap、PV/PVC、StorageClass、Event、YAML 与集群概览查询；YAML 更新仅开放 Workload、Service、Ingress 的受限集合。
+- `internal/resources`：Namespace、Node、Pod、Deployment、StatefulSet、ReplicaSet、DaemonSet、Job、CronJob、Service、Ingress、ConfigMap、PV/PVC、StorageClass、Event、YAML 与集群概览查询；Namespace/Node 详情汇总健康状态、声明资源、Pod/顶层 Workload 和相关网络/存储资源，且不混同 P1 实时指标；Service 详情优先通过 EndpointSlice 建立 Endpoint/Pod/Event 关联，无 EndpointSlice 时回退 Endpoints；Ingress 详情继续复用 Service 关联，形成 Ingress→Service→Endpoint→Pod/Event 链路；PVC/PV 详情校验双向绑定并形成 PVC/PV→Pod→顶层 Workload/容器挂载/Event 链路，卷源仅返回安全摘要；YAML 更新仅开放 Workload、Service、Ingress 的受限集合。
 - `internal/logquery`：MVP 使用 Kubernetes API 直查 Pod 日志。
-- `internal/workload`：Pod 删除、Deployment 扩缩容、Deployment 重启。
+- `internal/workload`：Pod 删除与受控 Pod 重启，Deployment/StatefulSet 扩缩容与滚动重启。
 - `internal/audit`：写操作审计落库和审计日志查询。
 
-当前阶段的资源写操作只开放 Pod 删除、Deployment 扩缩容、Deployment 重启，以及 `deployment/statefulset/daemonset/job/cronjob/service/ingress` YAML 更新；Secret、ConfigMap 直改、Pod exec、Namespace 删除等高危能力仍保持关闭。
+当前阶段的资源写操作开放 Pod 删除与受控 Pod 重启、Deployment/StatefulSet 扩缩容与滚动重启、CronJob 暂停/恢复，以及 `deployment/statefulset/daemonset/job/cronjob/service/ingress` YAML 更新；Secret、ConfigMap 直改、Job/CronJob 删除、CronJob 立即运行、Pod exec、Namespace 删除、Node cordon/drain/污点修改和指定调度等高危或多节点能力仍保持关闭。YAML 保存不会隐式调用重启 API，前端在保存 Deployment/StatefulSet 后提供可选的独立滚动重启。

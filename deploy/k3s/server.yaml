@@ -22,6 +22,13 @@ spec:
             - "-config"
             - "/etc/ops-platform/ops-server.yaml"
           env:
+            - name: OPS_DATABASE_DRIVER
+              value: postgres
+            - name: OPS_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: ops-server-secrets
+                  key: database-dsn
             - name: OPS_AUTH_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -63,15 +70,10 @@ spec:
             - name: config
               mountPath: /etc/ops-platform
               readOnly: true
-            - name: data
-              mountPath: /data
       volumes:
         - name: config
           configMap:
             name: ops-server-config
-        - name: data
-          persistentVolumeClaim:
-            claimName: ops-platform-sqlite
 ---
 apiVersion: v1
 kind: Service

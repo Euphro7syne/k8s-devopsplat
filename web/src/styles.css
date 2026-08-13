@@ -262,10 +262,22 @@ input {
 
 .drawer-toolbar {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 140px auto auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) 130px minmax(190px, 1fr) auto auto auto;
   gap: 10px;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.log-mode-tabs {
+  margin-bottom: 8px;
+}
+
+.log-scope-alert {
+  margin-bottom: 12px;
+}
+
+.detail-scope-alert {
+  margin-top: 16px;
 }
 
 .yaml-toolbar {

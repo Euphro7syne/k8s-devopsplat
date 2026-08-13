@@ -80,6 +80,9 @@ func TestUserRoleManagement(t *testing.T) {
 	if err := store.UpdateUserStatus(ctx, user.ID, "disabled"); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
+	if err := store.UpdateUserPasswordHash(ctx, user.ID, "new-hash"); err != nil {
+		t.Fatalf("update password hash: %v", err)
+	}
 	if err := store.UpdateUserMFASecret(ctx, user.ID, "JBSWY3DPEHPK3PXP"); err != nil {
 		t.Fatalf("update mfa secret: %v", err)
 	}
@@ -93,6 +96,9 @@ func TestUserRoleManagement(t *testing.T) {
 	}
 	if users[0].Status != "disabled" {
 		t.Fatalf("expected disabled user, got %s", users[0].Status)
+	}
+	if users[0].PasswordHash != "new-hash" {
+		t.Fatalf("expected updated password hash")
 	}
 	if !users[0].MFAEnabled {
 		t.Fatalf("expected MFA-enabled user")

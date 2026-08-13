@@ -57,6 +57,24 @@ func TestBootstrapLoginAndRefresh(t *testing.T) {
 		t.Fatalf("admin should satisfy role checks")
 	}
 
+	service.cfg.LocalAdmin.Password = "admin123"
+	if err := service.BootstrapAdmin(ctx); err != nil {
+		t.Fatalf("sync configured admin password: %v", err)
+	}
+	if _, err := service.Login(ctx, LoginRequest{
+		Email:    "admin@example.com",
+		Password: "change-me-admin-password",
+	}); err == nil {
+		t.Fatalf("expected previous admin password to stop working after config sync")
+	}
+	login, err = service.Login(ctx, LoginRequest{
+		Email:    "admin@example.com",
+		Password: "admin123",
+	})
+	if err != nil {
+		t.Fatalf("login with synchronized admin password: %v", err)
+	}
+
 	refreshed, err := service.Refresh(ctx, login.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -269,7 +287,7 @@ func TestRequiredMFAEnrollmentAndLogin(t *testing.T) {
 	}
 }
 
-func TestOptionalMFAEnableAndDisable(t *testing.T) {
+func TestDisabledMFASwitchSkipsVerificationAndAllowsBindingCleanup(t *testing.T) {
 	ctx := context.Background()
 	db, err := sqlite.Open(ctx, config.DatabaseConfig{
 		Driver:       "sqlite",
@@ -313,7 +331,7 @@ func TestOptionalMFAEnableAndDisable(t *testing.T) {
 		t.Fatalf("login: %v", err)
 	}
 	if login.MFARequired || login.AccessToken == "" {
-		t.Fatalf("expected direct login while MFA is optional")
+		t.Fatalf("expected password-only login while MFA switch is disabled")
 	}
 
 	setup, err := service.StartMFAEnrollment(ctx, user.ID)
@@ -331,8 +349,24 @@ func TestOptionalMFAEnableAndDisable(t *testing.T) {
 	if !enabled.User.MFAEnabled || !enabled.User.MFAVerified {
 		t.Fatalf("expected enabled MFA principal, got %#v", enabled.User)
 	}
-	if _, err := service.AuthenticateAccessToken(ctx, login.AccessToken); err == nil {
-		t.Fatalf("expected pre-MFA access token to be rejected after enrollment")
+	if _, err := service.AuthenticateAccessToken(ctx, login.AccessToken); err != nil {
+		t.Fatalf("disabled MFA switch must keep password-only access token valid: %v", err)
+	}
+	directLogin, err := service.Login(ctx, LoginRequest{
+		Email:    user.Email,
+		Password: "change-me-viewer-password",
+	})
+	if err != nil {
+		t.Fatalf("login with stored MFA binding while switch is disabled: %v", err)
+	}
+	if directLogin.MFARequired || directLogin.MFAToken != "" || directLogin.AccessToken == "" {
+		t.Fatalf("disabled MFA switch must skip the challenge, got %#v", directLogin)
+	}
+	if !directLogin.User.MFAEnabled || directLogin.User.MFAVerified {
+		t.Fatalf("binding should be reported but not verified while switch is disabled: %#v", directLogin.User)
+	}
+	if _, err := service.Refresh(ctx, directLogin.RefreshToken); err != nil {
+		t.Fatalf("refresh must not require MFA while switch is disabled: %v", err)
 	}
 	if _, err := service.ResetUserMFA(ctx, user.ID, user.ID, true); err == nil {
 		t.Fatalf("expected self MFA reset to be rejected")
@@ -365,6 +399,28 @@ func TestOptionalMFAEnableAndDisable(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("login with legacy mfa secret: %v", err)
+	}
+	if legacyLogin.MFARequired || legacyLogin.AccessToken == "" {
+		t.Fatalf("disabled switch must also skip legacy MFA binding")
+	}
+	legacyStored, err := db.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("load legacy user while switch is disabled: %v", err)
+	}
+	if legacyStored.MFASecret != setup.Secret {
+		t.Fatalf("disabled switch must not touch the stored MFA secret")
+	}
+
+	service.cfg.MFAEnabled = true
+	legacyLogin, err = service.Login(ctx, LoginRequest{
+		Email:    user.Email,
+		Password: "change-me-viewer-password",
+	})
+	if err != nil {
+		t.Fatalf("login after enabling mfa switch: %v", err)
+	}
+	if !legacyLogin.MFARequired || legacyLogin.MFASetupRequired {
+		t.Fatalf("enabled switch must require verification for existing binding")
 	}
 	if _, err := service.VerifyMFA(ctx, MFAVerifyRequest{MFAToken: legacyLogin.MFAToken, Code: code}); err != nil {
 		t.Fatalf("verify legacy mfa secret: %v", err)

@@ -48,6 +48,7 @@ type AuthStore interface {
 	ListRoles(ctx context.Context) ([]model.Role, error)
 	CreateUser(ctx context.Context, user *model.User) error
 	UpdateUserStatus(ctx context.Context, userID int64, status string) error
+	UpdateUserPasswordHash(ctx context.Context, userID int64, passwordHash string) error
 	UpdateUserMFASecret(ctx context.Context, userID int64, secret string) error
 	AssignRoleByName(ctx context.Context, userID int64, roleName string) error
 	ReplaceUserRoles(ctx context.Context, userID int64, roleNames []string) error
