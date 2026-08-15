@@ -3,6 +3,18 @@ kind: Namespace
 metadata:
   name: demo-app
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: safe-read-demo
+  namespace: demo-app
+  labels:
+    app: safe-read-demo
+type: Opaque
+stringData:
+  username: integration-user
+  password: integration-placeholder-value
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -89,6 +101,45 @@ spec:
                 i=$((i + 1))
                 sleep 3
               done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: previous-log-demo
+  namespace: demo-app
+  labels:
+    app: previous-log-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: previous-log-demo
+  template:
+    metadata:
+      labels:
+        app: previous-log-demo
+    spec:
+      containers:
+        - name: logger
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ ! -f /state/restarted ]; then
+                touch /state/restarted
+                echo "level=error msg=previous-demo token=integration-log-placeholder"
+                sleep 1
+                exit 1
+              fi
+              echo "level=info msg=current-after-restart"
+              sleep 3600
+          volumeMounts:
+            - name: state
+              mountPath: /state
+      volumes:
+        - name: state
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

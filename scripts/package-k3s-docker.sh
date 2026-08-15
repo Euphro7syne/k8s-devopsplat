@@ -5,6 +5,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAMP="$(date +%Y%m%d%H%M%S)"
 OUT_ROOT="${OUT_ROOT:-${ROOT_DIR}/dist/package}"
 PKG_DIR="${OUT_ROOT}/ops-platform-k3s-docker-${STAMP}"
+SECRET_TEMPLATE="${ROOT_DIR}/deploy/k3s/server-secret.yaml"
+
+for placeholder in \
+  change-me-jwt-secret \
+  change-me-mfa-secret-key \
+  change-me-postgres-password; do
+  if ! grep -Fq "${placeholder}" "${SECRET_TEMPLATE}"; then
+    echo "refusing to package an initialized Secret file: ${SECRET_TEMPLATE}" >&2
+    echo "restore the placeholder-only template before packaging" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "${PKG_DIR}/images" "${PKG_DIR}/deploy" "${PKG_DIR}/test/integration/fixtures"
 mkdir -p "${PKG_DIR}/source/ops-platform"
@@ -23,6 +35,7 @@ rsync -a \
   --exclude 'web/node_modules' \
   --exclude 'web/dist' \
   --exclude 'configs/ops-server.yaml' \
+  --exclude 'HANDOFF*.md' \
   --exclude 'PROMPT.md' \
   --exclude '参考.md.rtf' \
   --exclude '需要实现的功能.rtf' \

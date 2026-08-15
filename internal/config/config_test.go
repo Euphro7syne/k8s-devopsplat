@@ -18,6 +18,11 @@ func TestLoadConfig(t *testing.T) {
 server:
   listen: "127.0.0.1:18080"
   read_timeout: 3s
+kubernetes:
+  cache:
+    enabled: true
+    resync_period: 20m
+    sync_timeout: 8s
 database:
   driver: sqlite
   dsn: "file:test.db?_foreign_keys=1"
@@ -41,6 +46,9 @@ auth:
 	}
 	if cfg.Server.ReadTimeout != 3*time.Second {
 		t.Fatalf("unexpected read timeout: %s", cfg.Server.ReadTimeout)
+	}
+	if !cfg.Kubernetes.Cache.Enabled || cfg.Kubernetes.Cache.ResyncPeriod != 20*time.Minute || cfg.Kubernetes.Cache.SyncTimeout != 8*time.Second {
+		t.Fatalf("unexpected kubernetes cache config: %#v", cfg.Kubernetes.Cache)
 	}
 	if cfg.Database.Driver != "postgres" {
 		t.Fatalf("unexpected database driver: %s", cfg.Database.Driver)
@@ -110,5 +118,26 @@ func TestDefaultLocalAdminPassword(t *testing.T) {
 	cfg := Default()
 	if cfg.Auth.LocalAdmin.Password != "admin123" {
 		t.Fatalf("unexpected default local admin password: %q", cfg.Auth.LocalAdmin.Password)
+	}
+}
+
+func TestValidateKubernetesCache(t *testing.T) {
+	for _, mutate := range []func(*KubernetesCacheConfig){
+		func(cfg *KubernetesCacheConfig) { cfg.ResyncPeriod = 0 },
+		func(cfg *KubernetesCacheConfig) { cfg.SyncTimeout = 0 },
+	} {
+		cfg := Default()
+		mutate(&cfg.Kubernetes.Cache)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected enabled Kubernetes cache config to be rejected")
+		}
+	}
+
+	cfg := Default()
+	cfg.Kubernetes.Cache.Enabled = false
+	cfg.Kubernetes.Cache.ResyncPeriod = 0
+	cfg.Kubernetes.Cache.SyncTimeout = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled Kubernetes cache should ignore timing values: %v", err)
 	}
 }

@@ -19,5 +19,8 @@
 - `POST /api/v1/namespaces/{namespace}/statefulsets/{name}/scale`
 - `POST /api/v1/namespaces/{namespace}/statefulsets/{name}/restart`
 - `POST /api/v1/namespaces/{namespace}/daemonsets/{name}/restart`
+- `POST /api/v1/namespaces/{namespace}/secrets/{name}/values/{key}?confirm=true`
+
+Secret 明文读取被建模为写式 POST，虽然不修改 Kubernetes 对象，也必须记录操作者、路径、namespace、来源 IP 和时间。值不放在请求体中，审计 `request_body` 为空；审计记录只保留路由模板中的 key 参数位置，不记录响应明文。
 
 审计查询：`GET /api/v1/audit/logs`，仅 `auditor` / `admin` 可访问。请求体会经过 sanitizer，`password/token/secret/authorization/api_key/private_key` 以及 MFA 动态码等字段会打码。

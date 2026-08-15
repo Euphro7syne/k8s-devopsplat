@@ -5,8 +5,7 @@ metadata:
   namespace: ops-platform
 spec:
   rules:
-    - host: ops-platform.local
-      http:
+    - http:
         paths:
           - path: /api
             pathType: Prefix

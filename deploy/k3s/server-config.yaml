@@ -30,6 +30,10 @@ data:
       mode: in-cluster
       kubeconfig: ""
       namespace: ops-platform
+      cache:
+        enabled: true
+        resync_period: 10m
+        sync_timeout: 15s
 
     database:
       driver: postgres

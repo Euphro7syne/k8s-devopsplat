@@ -23,6 +23,10 @@ kubernetes:
   mode: auto
   kubeconfig: "~/.kube/config"
   namespace: ops-platform
+  cache:
+    enabled: true
+    resync_period: 10m
+    sync_timeout: 15s
 
 database:
   # 可选 sqlite/sqlite3 或 postgres/postgresql。

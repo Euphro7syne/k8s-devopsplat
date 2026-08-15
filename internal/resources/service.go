@@ -2,12 +2,14 @@ package resources
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -42,48 +44,54 @@ type KubernetesClient interface {
 
 type Service struct {
 	client      KubernetesClient
+	cache       ResourceCache
+	mapper      *ResourceMapper
 	clusterName string
 }
 
 func NewService(client KubernetesClient, clusterName string) *Service {
+	return NewCachedService(client, nil, clusterName)
+}
+
+func NewCachedService(client KubernetesClient, cache ResourceCache, clusterName string) *Service {
 	if clusterName == "" {
 		clusterName = "in-cluster"
 	}
-	return &Service{client: client, clusterName: clusterName}
+	return &Service{client: client, cache: cache, mapper: NewResourceMapper(client, cache), clusterName: clusterName}
 }
 
 func (s *Service) Overview(ctx context.Context) (ClusterOverview, error) {
 	if s.client == nil {
 		return ClusterOverview{}, unavailable()
 	}
-	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	nodes, err := s.listNodes(ctx, "list nodes failed")
 	if err != nil {
 		return ClusterOverview{}, mapKubernetesError(err, "list nodes failed")
 	}
-	namespaces, err := s.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	namespaces, err := s.listNamespaces(ctx, "list namespaces failed")
 	if err != nil {
 		return ClusterOverview{}, mapKubernetesError(err, "list namespaces failed")
 	}
-	pods, err := s.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, "", "list pods failed")
 	if err != nil {
 		return ClusterOverview{}, mapKubernetesError(err, "list pods failed")
 	}
 
 	overview := ClusterOverview{
 		Cluster:        s.clusterName,
-		NodeCount:      len(nodes.Items),
-		NamespaceCount: len(namespaces.Items),
-		PodCount:       len(pods.Items),
-		Nodes:          make([]NodeSummary, 0, len(nodes.Items)),
+		NodeCount:      len(nodes),
+		NamespaceCount: len(namespaces),
+		PodCount:       len(pods),
+		Nodes:          make([]NodeSummary, 0, len(nodes)),
 	}
-	for _, node := range nodes.Items {
+	for _, node := range nodes {
 		summary := nodeSummary(node)
 		if summary.Status == "Ready" {
 			overview.ReadyNodeCount++
 		}
 		overview.Nodes = append(overview.Nodes, summary)
 	}
-	for _, pod := range pods.Items {
+	for _, pod := range pods {
 		if isAbnormalPod(pod) {
 			overview.AbnormalPodCount++
 		}
@@ -95,12 +103,12 @@ func (s *Service) ListNamespaces(ctx context.Context) ([]NamespaceSummary, error
 	if s.client == nil {
 		return nil, unavailable()
 	}
-	items, err := s.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	items, err := s.listNamespaces(ctx, "list namespaces failed")
 	if err != nil {
 		return nil, mapKubernetesError(err, "list namespaces failed")
 	}
-	namespaces := make([]NamespaceSummary, 0, len(items.Items))
-	for _, ns := range items.Items {
+	namespaces := make([]NamespaceSummary, 0, len(items))
+	for _, ns := range items {
 		namespaces = append(namespaces, NamespaceSummary{
 			Name:      ns.Name,
 			Status:    string(ns.Status.Phase),
@@ -117,72 +125,72 @@ func (s *Service) GetNamespace(ctx context.Context, name string) (NamespaceDetai
 	if s.client == nil {
 		return NamespaceDetail{}, unavailable()
 	}
-	namespace, err := s.client.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	namespace, err := s.getNamespace(ctx, name, "get namespace failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "get namespace failed")
 	}
-	pods, err := s.client.CoreV1().Pods(name).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, name, "list namespace pods failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace pods failed")
 	}
-	deployments, err := s.client.AppsV1().Deployments(name).List(ctx, metav1.ListOptions{})
+	deployments, err := s.listDeployments(ctx, name, "list namespace deployments failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace deployments failed")
 	}
-	statefulSets, err := s.client.AppsV1().StatefulSets(name).List(ctx, metav1.ListOptions{})
+	statefulSets, err := s.listStatefulSets(ctx, name, "list namespace statefulsets failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace statefulsets failed")
 	}
-	daemonSets, err := s.client.AppsV1().DaemonSets(name).List(ctx, metav1.ListOptions{})
+	daemonSets, err := s.listDaemonSets(ctx, name, "list namespace daemonsets failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace daemonsets failed")
 	}
-	replicaSets, err := s.client.AppsV1().ReplicaSets(name).List(ctx, metav1.ListOptions{})
+	replicaSets, err := s.listReplicaSets(ctx, name, "list namespace replicasets failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace replicasets failed")
 	}
-	jobs, err := s.client.BatchV1().Jobs(name).List(ctx, metav1.ListOptions{})
+	jobs, err := s.listJobs(ctx, name, "list namespace jobs failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace jobs failed")
 	}
-	cronJobs, err := s.client.BatchV1().CronJobs(name).List(ctx, metav1.ListOptions{})
+	cronJobs, err := s.listCronJobs(ctx, name, "list namespace cronjobs failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace cronjobs failed")
 	}
-	services, err := s.client.CoreV1().Services(name).List(ctx, metav1.ListOptions{})
+	services, err := s.listServices(ctx, name, "list namespace services failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace services failed")
 	}
-	ingresses, err := s.client.NetworkingV1().Ingresses(name).List(ctx, metav1.ListOptions{})
+	ingresses, err := s.listIngresses(ctx, name, "list namespace ingresses failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace ingresses failed")
 	}
-	pvcs, err := s.client.CoreV1().PersistentVolumeClaims(name).List(ctx, metav1.ListOptions{})
+	pvcs, err := s.listPVCs(ctx, name, "list namespace persistent volume claims failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace persistent volume claims failed")
 	}
-	configMaps, err := s.client.CoreV1().ConfigMaps(name).List(ctx, metav1.ListOptions{})
+	configMaps, err := s.listConfigMaps(ctx, name, "list namespace configmaps failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace configmaps failed")
 	}
-	events, err := s.client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, "", "list namespace events failed")
 	if err != nil {
 		return NamespaceDetail{}, mapKubernetesError(err, "list namespace events failed")
 	}
 
-	return s.namespaceDetail(ctx, *namespace, pods.Items, deployments.Items, statefulSets.Items, daemonSets.Items, replicaSets.Items, jobs.Items, cronJobs.Items, services.Items, ingresses.Items, pvcs.Items, configMaps.Items, events.Items), nil
+	return s.namespaceDetail(ctx, *namespace, pods, deployments, statefulSets, daemonSets, replicaSets, jobs, cronJobs, services, ingresses, pvcs, configMaps, events), nil
 }
 
 func (s *Service) ListNodes(ctx context.Context, opts ListOptions) (pagination.Result[NodeSummary], error) {
 	if s.client == nil {
 		return pagination.Result[NodeSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	items, err := s.listNodes(ctx, "list nodes failed")
 	if err != nil {
 		return pagination.Result[NodeSummary]{}, mapKubernetesError(err, "list nodes failed")
 	}
-	nodes := make([]NodeSummary, 0, len(items.Items))
-	for _, node := range items.Items {
+	nodes := make([]NodeSummary, 0, len(items))
+	for _, node := range items {
 		nodes = append(nodes, nodeSummary(node))
 	}
 	sort.Slice(nodes, func(i, j int) bool {
@@ -195,31 +203,31 @@ func (s *Service) GetNode(ctx context.Context, name string) (NodeDetail, error) 
 	if s.client == nil {
 		return NodeDetail{}, unavailable()
 	}
-	node, err := s.client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	node, err := s.getNode(ctx, name, "get node failed")
 	if err != nil {
 		return NodeDetail{}, mapKubernetesError(err, "get node failed")
 	}
-	pods, err := s.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, "", "list node pods failed")
 	if err != nil {
 		return NodeDetail{}, mapKubernetesError(err, "list node pods failed")
 	}
-	events, err := s.client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, "", "list node events failed")
 	if err != nil {
 		return NodeDetail{}, mapKubernetesError(err, "list node events failed")
 	}
-	return s.nodeDetail(ctx, *node, pods.Items, events.Items), nil
+	return s.nodeDetail(ctx, *node, pods, events), nil
 }
 
 func (s *Service) ListPods(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[PodSummary], error) {
 	if s.client == nil {
 		return pagination.Result[PodSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listPods(ctx, namespace, "list pods failed")
 	if err != nil {
 		return pagination.Result[PodSummary]{}, mapKubernetesError(err, "list pods failed")
 	}
-	pods := make([]PodSummary, 0, len(items.Items))
-	for _, pod := range items.Items {
+	pods := make([]PodSummary, 0, len(items))
+	for _, pod := range items {
 		pods = append(pods, podSummary(pod))
 	}
 	sort.Slice(pods, func(i, j int) bool {
@@ -235,7 +243,7 @@ func (s *Service) GetPod(ctx context.Context, namespace, name string) (PodDetail
 	if s.client == nil {
 		return PodDetail{}, unavailable()
 	}
-	pod, err := s.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	pod, err := s.getPod(ctx, namespace, name, "get pod failed")
 	if err != nil {
 		return PodDetail{}, mapKubernetesError(err, "get pod failed")
 	}
@@ -262,12 +270,12 @@ func (s *Service) ListEvents(ctx context.Context, namespace, involvedKind, invol
 	if s.client == nil {
 		return nil, unavailable()
 	}
-	items, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listEvents(ctx, namespace, "list events failed")
 	if err != nil {
 		return nil, mapKubernetesError(err, "list events failed")
 	}
-	events := make([]EventSummary, 0, len(items.Items))
-	for _, event := range items.Items {
+	events := make([]EventSummary, 0, len(items))
+	for _, event := range items {
 		if involvedKind != "" && !strings.EqualFold(event.InvolvedObject.Kind, involvedKind) {
 			continue
 		}
@@ -283,41 +291,19 @@ func (s *Service) ListEvents(ctx context.Context, namespace, involvedKind, invol
 }
 
 func (s *Service) podControllerChain(ctx context.Context, pod corev1.Pod) []OwnerReference {
-	controller, ok := controllerOwnerReference(pod.OwnerReferences)
-	if !ok {
-		return nil
-	}
-	chain := []OwnerReference{ownerReference(controller)}
-
-	switch strings.ToLower(controller.Kind) {
-	case "replicaset":
-		item, err := s.client.AppsV1().ReplicaSets(pod.Namespace).Get(ctx, controller.Name, metav1.GetOptions{})
-		if err == nil {
-			if parent, found := controllerOwnerReference(item.OwnerReferences); found {
-				chain = append(chain, ownerReference(parent))
-			}
-		}
-	case "job":
-		item, err := s.client.BatchV1().Jobs(pod.Namespace).Get(ctx, controller.Name, metav1.GetOptions{})
-		if err == nil {
-			if parent, found := controllerOwnerReference(item.OwnerReferences); found {
-				chain = append(chain, ownerReference(parent))
-			}
-		}
-	}
-	return chain
+	return s.mapper.PodController(ctx, pod).Chain
 }
 
 func (s *Service) ListDeployments(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[DeploymentSummary], error) {
 	if s.client == nil {
 		return pagination.Result[DeploymentSummary]{}, unavailable()
 	}
-	items, err := s.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listDeployments(ctx, namespace, "list deployments failed")
 	if err != nil {
 		return pagination.Result[DeploymentSummary]{}, mapKubernetesError(err, "list deployments failed")
 	}
-	deployments := make([]DeploymentSummary, 0, len(items.Items))
-	for _, deployment := range items.Items {
+	deployments := make([]DeploymentSummary, 0, len(items))
+	for _, deployment := range items {
 		deployments = append(deployments, DeploymentSummaryFrom(deployment))
 	}
 	sort.Slice(deployments, func(i, j int) bool {
@@ -333,24 +319,24 @@ func (s *Service) GetDeployment(ctx context.Context, namespace, name string) (De
 	if s.client == nil {
 		return DeploymentDetail{}, unavailable()
 	}
-	deployment, err := s.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	deployment, err := s.getDeployment(ctx, namespace, name, "get deployment failed")
 	if err != nil {
 		return DeploymentDetail{}, mapKubernetesError(err, "get deployment failed")
 	}
-	replicaSetList, err := s.client.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+	replicaSets, err := s.listReplicaSets(ctx, namespace, "list deployment replicasets failed")
 	if err != nil {
 		return DeploymentDetail{}, mapKubernetesError(err, "list deployment replicasets failed")
 	}
-	podList, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list deployment pods failed")
 	if err != nil {
 		return DeploymentDetail{}, mapKubernetesError(err, "list deployment pods failed")
 	}
-	eventList, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, namespace, "list deployment events failed")
 	if err != nil {
 		return DeploymentDetail{}, mapKubernetesError(err, "list deployment events failed")
 	}
 
-	return deploymentDetail(*deployment, replicaSetList.Items, podList.Items, eventList.Items), nil
+	return deploymentDetail(*deployment, replicaSets, pods, events), nil
 }
 
 func (s *Service) DeploymentYAML(ctx context.Context, namespace, name string) (string, error) {
@@ -373,12 +359,12 @@ func (s *Service) ListStatefulSets(ctx context.Context, namespace string, opts L
 	if s.client == nil {
 		return pagination.Result[WorkloadSummary]{}, unavailable()
 	}
-	items, err := s.client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listStatefulSets(ctx, namespace, "list statefulsets failed")
 	if err != nil {
 		return pagination.Result[WorkloadSummary]{}, mapKubernetesError(err, "list statefulsets failed")
 	}
-	workloads := make([]WorkloadSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	workloads := make([]WorkloadSummary, 0, len(items))
+	for _, item := range items {
 		workloads = append(workloads, StatefulSetSummaryFrom(item))
 	}
 	sortWorkloads(workloads)
@@ -389,7 +375,7 @@ func (s *Service) GetStatefulSet(ctx context.Context, namespace, name string) (S
 	if s.client == nil {
 		return StatefulSetDetail{}, unavailable()
 	}
-	item, err := s.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getStatefulSet(ctx, namespace, name, "get statefulset failed")
 	if err != nil {
 		return StatefulSetDetail{}, mapKubernetesError(err, "get statefulset failed")
 	}
@@ -411,12 +397,12 @@ func (s *Service) ListReplicaSets(ctx context.Context, namespace string, opts Li
 	if s.client == nil {
 		return pagination.Result[WorkloadSummary]{}, unavailable()
 	}
-	items, err := s.client.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listReplicaSets(ctx, namespace, "list replicasets failed")
 	if err != nil {
 		return pagination.Result[WorkloadSummary]{}, mapKubernetesError(err, "list replicasets failed")
 	}
-	workloads := make([]WorkloadSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	workloads := make([]WorkloadSummary, 0, len(items))
+	for _, item := range items {
 		workloads = append(workloads, replicaSetSummary(item))
 	}
 	sortWorkloads(workloads)
@@ -427,31 +413,31 @@ func (s *Service) GetReplicaSet(ctx context.Context, namespace, name string) (Re
 	if s.client == nil {
 		return ReplicaSetDetail{}, unavailable()
 	}
-	item, err := s.client.AppsV1().ReplicaSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getReplicaSet(ctx, namespace, name, "get replicaset failed")
 	if err != nil {
 		return ReplicaSetDetail{}, mapKubernetesError(err, "get replicaset failed")
 	}
-	podList, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list replicaset pods failed")
 	if err != nil {
 		return ReplicaSetDetail{}, mapKubernetesError(err, "list replicaset pods failed")
 	}
-	eventList, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, namespace, "list replicaset events failed")
 	if err != nil {
 		return ReplicaSetDetail{}, mapKubernetesError(err, "list replicaset events failed")
 	}
-	return replicaSetDiagnosticDetail(*item, podList.Items, eventList.Items), nil
+	return replicaSetDiagnosticDetail(*item, pods, events), nil
 }
 
 func (s *Service) ListDaemonSets(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[DaemonSetSummary], error) {
 	if s.client == nil {
 		return pagination.Result[DaemonSetSummary]{}, unavailable()
 	}
-	items, err := s.client.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listDaemonSets(ctx, namespace, "list daemonsets failed")
 	if err != nil {
 		return pagination.Result[DaemonSetSummary]{}, mapKubernetesError(err, "list daemonsets failed")
 	}
-	daemonSets := make([]DaemonSetSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	daemonSets := make([]DaemonSetSummary, 0, len(items))
+	for _, item := range items {
 		daemonSets = append(daemonSets, DaemonSetSummaryFrom(item))
 	}
 	sort.Slice(daemonSets, func(i, j int) bool {
@@ -467,7 +453,7 @@ func (s *Service) GetDaemonSet(ctx context.Context, namespace, name string) (Dae
 	if s.client == nil {
 		return DaemonSetDetail{}, unavailable()
 	}
-	item, err := s.client.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getDaemonSet(ctx, namespace, name, "get daemonset failed")
 	if err != nil {
 		return DaemonSetDetail{}, mapKubernetesError(err, "get daemonset failed")
 	}
@@ -489,12 +475,12 @@ func (s *Service) ListJobs(ctx context.Context, namespace string, opts ListOptio
 	if s.client == nil {
 		return pagination.Result[JobSummary]{}, unavailable()
 	}
-	items, err := s.client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listJobs(ctx, namespace, "list jobs failed")
 	if err != nil {
 		return pagination.Result[JobSummary]{}, mapKubernetesError(err, "list jobs failed")
 	}
-	jobs := make([]JobSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	jobs := make([]JobSummary, 0, len(items))
+	for _, item := range items {
 		jobs = append(jobs, jobSummary(item))
 	}
 	sort.Slice(jobs, func(i, j int) bool {
@@ -510,31 +496,31 @@ func (s *Service) GetJob(ctx context.Context, namespace, name string) (JobDetail
 	if s.client == nil {
 		return JobDetail{}, unavailable()
 	}
-	item, err := s.client.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getJob(ctx, namespace, name, "get job failed")
 	if err != nil {
 		return JobDetail{}, mapKubernetesError(err, "get job failed")
 	}
-	podList, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list job pods failed")
 	if err != nil {
 		return JobDetail{}, mapKubernetesError(err, "list job pods failed")
 	}
-	eventList, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, namespace, "list job events failed")
 	if err != nil {
 		return JobDetail{}, mapKubernetesError(err, "list job events failed")
 	}
-	return jobDetail(*item, podList.Items, eventList.Items), nil
+	return jobDetail(*item, pods, events), nil
 }
 
 func (s *Service) ListCronJobs(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[CronJobSummary], error) {
 	if s.client == nil {
 		return pagination.Result[CronJobSummary]{}, unavailable()
 	}
-	items, err := s.client.BatchV1().CronJobs(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listCronJobs(ctx, namespace, "list cronjobs failed")
 	if err != nil {
 		return pagination.Result[CronJobSummary]{}, mapKubernetesError(err, "list cronjobs failed")
 	}
-	cronJobs := make([]CronJobSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	cronJobs := make([]CronJobSummary, 0, len(items))
+	for _, item := range items {
 		cronJobs = append(cronJobs, CronJobSummaryFrom(item))
 	}
 	sort.Slice(cronJobs, func(i, j int) bool {
@@ -550,35 +536,35 @@ func (s *Service) GetCronJob(ctx context.Context, namespace, name string) (CronJ
 	if s.client == nil {
 		return CronJobDetail{}, unavailable()
 	}
-	item, err := s.client.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getCronJob(ctx, namespace, name, "get cronjob failed")
 	if err != nil {
 		return CronJobDetail{}, mapKubernetesError(err, "get cronjob failed")
 	}
-	jobList, err := s.client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+	jobs, err := s.listJobs(ctx, namespace, "list cronjob jobs failed")
 	if err != nil {
 		return CronJobDetail{}, mapKubernetesError(err, "list cronjob jobs failed")
 	}
-	podList, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list cronjob pods failed")
 	if err != nil {
 		return CronJobDetail{}, mapKubernetesError(err, "list cronjob pods failed")
 	}
-	eventList, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, namespace, "list cronjob events failed")
 	if err != nil {
 		return CronJobDetail{}, mapKubernetesError(err, "list cronjob events failed")
 	}
-	return cronJobDetail(*item, jobList.Items, podList.Items, eventList.Items), nil
+	return cronJobDetail(*item, jobs, pods, events), nil
 }
 
 func (s *Service) ListServices(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[ServiceSummary], error) {
 	if s.client == nil {
 		return pagination.Result[ServiceSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listServices(ctx, namespace, "list services failed")
 	if err != nil {
 		return pagination.Result[ServiceSummary]{}, mapKubernetesError(err, "list services failed")
 	}
-	services := make([]ServiceSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	services := make([]ServiceSummary, 0, len(items))
+	for _, item := range items {
 		services = append(services, serviceSummary(item))
 	}
 	sort.Slice(services, func(i, j int) bool {
@@ -594,44 +580,42 @@ func (s *Service) GetService(ctx context.Context, namespace, name string) (Servi
 	if s.client == nil {
 		return ServiceDetail{}, unavailable()
 	}
-	item, err := s.client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getService(ctx, namespace, name, "get service failed")
 	if err != nil {
 		return ServiceDetail{}, mapKubernetesError(err, "get service failed")
 	}
-	slices, err := s.client.DiscoveryV1().EndpointSlices(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: klabels.Set{discoveryv1.LabelServiceName: name}.AsSelector().String(),
-	})
+	slices, err := s.listEndpointSlices(ctx, namespace, klabels.Set{discoveryv1.LabelServiceName: name}.AsSelector(), "list service endpoint slices failed")
 	if err != nil {
 		return ServiceDetail{}, mapKubernetesError(err, "list service endpoint slices failed")
 	}
-	legacyEndpoints, err := s.client.CoreV1().Endpoints(namespace).Get(ctx, name, metav1.GetOptions{})
+	legacyEndpoints, err := s.getEndpoints(ctx, namespace, name, "get service endpoints failed")
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ServiceDetail{}, mapKubernetesError(err, "get service endpoints failed")
 	}
 	if apierrors.IsNotFound(err) {
 		legacyEndpoints = nil
 	}
-	pods, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list service pods failed")
 	if err != nil {
 		return ServiceDetail{}, mapKubernetesError(err, "list service pods failed")
 	}
-	events, err := s.client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, "", "list service events failed")
 	if err != nil {
 		return ServiceDetail{}, mapKubernetesError(err, "list service events failed")
 	}
-	return serviceDetail(*item, slices.Items, legacyEndpoints, pods.Items, events.Items), nil
+	return serviceDetail(*item, slices, legacyEndpoints, pods, events), nil
 }
 
 func (s *Service) ListIngresses(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[IngressSummary], error) {
 	if s.client == nil {
 		return pagination.Result[IngressSummary]{}, unavailable()
 	}
-	items, err := s.client.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listIngresses(ctx, namespace, "list ingresses failed")
 	if err != nil {
 		return pagination.Result[IngressSummary]{}, mapKubernetesError(err, "list ingresses failed")
 	}
-	ingresses := make([]IngressSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	ingresses := make([]IngressSummary, 0, len(items))
+	for _, item := range items {
 		ingresses = append(ingresses, ingressSummary(item))
 	}
 	sort.Slice(ingresses, func(i, j int) bool {
@@ -647,43 +631,43 @@ func (s *Service) GetIngress(ctx context.Context, namespace, name string) (Ingre
 	if s.client == nil {
 		return IngressDetail{}, unavailable()
 	}
-	item, err := s.client.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
+	item, err := s.getIngress(ctx, namespace, name, "get ingress failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "get ingress failed")
 	}
-	services, err := s.client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
+	services, err := s.listServices(ctx, namespace, "list ingress backend services failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "list ingress backend services failed")
 	}
-	slices, err := s.client.DiscoveryV1().EndpointSlices(namespace).List(ctx, metav1.ListOptions{})
+	slices, err := s.listEndpointSlices(ctx, namespace, nil, "list ingress backend endpoint slices failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "list ingress backend endpoint slices failed")
 	}
-	endpoints, err := s.client.CoreV1().Endpoints(namespace).List(ctx, metav1.ListOptions{})
+	endpoints, err := s.listEndpoints(ctx, namespace, "list ingress backend endpoints failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "list ingress backend endpoints failed")
 	}
-	pods, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list ingress backend pods failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "list ingress backend pods failed")
 	}
-	events, err := s.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, namespace, "list ingress events failed")
 	if err != nil {
 		return IngressDetail{}, mapKubernetesError(err, "list ingress events failed")
 	}
-	return ingressDetail(*item, services.Items, slices.Items, endpoints.Items, pods.Items, events.Items), nil
+	return ingressDetail(*item, services, slices, endpoints, pods, events), nil
 }
 
 func (s *Service) ListConfigMaps(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[ConfigMapSummary], error) {
 	if s.client == nil {
 		return pagination.Result[ConfigMapSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listConfigMaps(ctx, namespace, "list configmaps failed")
 	if err != nil {
 		return pagination.Result[ConfigMapSummary]{}, mapKubernetesError(err, "list configmaps failed")
 	}
-	configMaps := make([]ConfigMapSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	configMaps := make([]ConfigMapSummary, 0, len(items))
+	for _, item := range items {
 		configMaps = append(configMaps, configMapSummary(item))
 	}
 	sort.Slice(configMaps, func(i, j int) bool {
@@ -695,16 +679,75 @@ func (s *Service) ListConfigMaps(ctx context.Context, namespace string, opts Lis
 	return paginate(configMaps, opts), nil
 }
 
+func (s *Service) ListSecrets(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[SecretSummary], error) {
+	if s.client == nil {
+		return pagination.Result[SecretSummary]{}, unavailable()
+	}
+	items, err := s.client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return pagination.Result[SecretSummary]{}, mapKubernetesError(err, "list secrets failed")
+	}
+	secrets := make([]SecretSummary, 0, len(items.Items))
+	for _, item := range items.Items {
+		secrets = append(secrets, secretSummary(item))
+	}
+	sort.Slice(secrets, func(i, j int) bool {
+		if secrets[i].Namespace == secrets[j].Namespace {
+			return secrets[i].Name < secrets[j].Name
+		}
+		return secrets[i].Namespace < secrets[j].Namespace
+	})
+	return paginate(secrets, opts), nil
+}
+
+func (s *Service) GetSecret(ctx context.Context, namespace, name string) (SecretDetail, error) {
+	if s.client == nil {
+		return SecretDetail{}, unavailable()
+	}
+	item, err := s.client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return SecretDetail{}, mapKubernetesError(err, "get secret failed")
+	}
+	return secretDetail(*item), nil
+}
+
+func (s *Service) ReadSecretValue(ctx context.Context, namespace, name, key string) (SecretValueResponse, error) {
+	if s.client == nil {
+		return SecretValueResponse{}, unavailable()
+	}
+	item, err := s.client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return SecretValueResponse{}, mapKubernetesError(err, "get secret value failed")
+	}
+	value, found := item.Data[key]
+	if !found {
+		return SecretValueResponse{}, apperrors.New(apperrors.CodeNotFound, "secret key not found", http.StatusNotFound)
+	}
+	result := SecretValueResponse{
+		Namespace: item.Namespace,
+		Name:      item.Name,
+		Key:       key,
+		Encoding:  "utf-8",
+	}
+	if utf8.Valid(value) {
+		result.Value = string(value)
+		return result, nil
+	}
+	result.Value = base64.StdEncoding.EncodeToString(value)
+	result.Encoding = "base64"
+	return result, nil
+}
+
 func (s *Service) ListPVCs(ctx context.Context, namespace string, opts ListOptions) (pagination.Result[PVCSummary], error) {
 	if s.client == nil {
 		return pagination.Result[PVCSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
+	items, err := s.listPVCs(ctx, namespace, "list persistentvolumeclaims failed")
 	if err != nil {
 		return pagination.Result[PVCSummary]{}, mapKubernetesError(err, "list persistentvolumeclaims failed")
 	}
-	pvcs := make([]PVCSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	pvcs := make([]PVCSummary, 0, len(items))
+	for _, item := range items {
 		pvcs = append(pvcs, pvcSummary(item))
 	}
 	sort.Slice(pvcs, func(i, j int) bool {
@@ -720,14 +763,14 @@ func (s *Service) GetPVC(ctx context.Context, namespace, name string) (PVCDetail
 	if s.client == nil {
 		return PVCDetail{}, unavailable()
 	}
-	pvc, err := s.client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	pvc, err := s.getPVC(ctx, namespace, name, "get persistent volume claim failed")
 	if err != nil {
 		return PVCDetail{}, mapKubernetesError(err, "get persistent volume claim failed")
 	}
 
 	var pv *corev1.PersistentVolume
 	if pvc.Spec.VolumeName != "" {
-		candidate, getErr := s.client.CoreV1().PersistentVolumes().Get(ctx, pvc.Spec.VolumeName, metav1.GetOptions{})
+		candidate, getErr := s.getPV(ctx, pvc.Spec.VolumeName, "get bound persistent volume failed")
 		switch {
 		case getErr == nil && persistentVolumeClaims(candidate, pvc):
 			pv = candidate
@@ -736,27 +779,27 @@ func (s *Service) GetPVC(ctx context.Context, namespace, name string) (PVCDetail
 		}
 	}
 
-	pods, err := s.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	pods, err := s.listPods(ctx, namespace, "list persistent volume claim pods failed")
 	if err != nil {
 		return PVCDetail{}, mapKubernetesError(err, "list persistent volume claim pods failed")
 	}
-	events, err := s.client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, "", "list persistent volume claim events failed")
 	if err != nil {
 		return PVCDetail{}, mapKubernetesError(err, "list persistent volume claim events failed")
 	}
-	return s.pvcDetail(ctx, *pvc, pv, pods.Items, events.Items), nil
+	return s.pvcDetail(ctx, *pvc, pv, pods, events), nil
 }
 
 func (s *Service) ListPVs(ctx context.Context, opts ListOptions) (pagination.Result[PVSummary], error) {
 	if s.client == nil {
 		return pagination.Result[PVSummary]{}, unavailable()
 	}
-	items, err := s.client.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	items, err := s.listPVs(ctx, "list persistentvolumes failed")
 	if err != nil {
 		return pagination.Result[PVSummary]{}, mapKubernetesError(err, "list persistentvolumes failed")
 	}
-	pvs := make([]PVSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	pvs := make([]PVSummary, 0, len(items))
+	for _, item := range items {
 		pvs = append(pvs, pvSummary(item))
 	}
 	sort.Slice(pvs, func(i, j int) bool {
@@ -769,14 +812,14 @@ func (s *Service) GetPV(ctx context.Context, name string) (PVDetail, error) {
 	if s.client == nil {
 		return PVDetail{}, unavailable()
 	}
-	pv, err := s.client.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
+	pv, err := s.getPV(ctx, name, "get persistent volume failed")
 	if err != nil {
 		return PVDetail{}, mapKubernetesError(err, "get persistent volume failed")
 	}
 
 	var pvc *corev1.PersistentVolumeClaim
 	if pv.Spec.ClaimRef != nil && pv.Spec.ClaimRef.Namespace != "" && pv.Spec.ClaimRef.Name != "" {
-		candidate, getErr := s.client.CoreV1().PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(ctx, pv.Spec.ClaimRef.Name, metav1.GetOptions{})
+		candidate, getErr := s.getPVC(ctx, pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name, "get bound persistent volume claim failed")
 		switch {
 		case getErr == nil && persistentVolumeClaims(pv, candidate):
 			pvc = candidate
@@ -787,29 +830,29 @@ func (s *Service) GetPV(ctx context.Context, name string) (PVDetail, error) {
 
 	pods := []corev1.Pod{}
 	if pvc != nil {
-		items, listErr := s.client.CoreV1().Pods(pvc.Namespace).List(ctx, metav1.ListOptions{})
+		items, listErr := s.listPods(ctx, pvc.Namespace, "list persistent volume pods failed")
 		if listErr != nil {
 			return PVDetail{}, mapKubernetesError(listErr, "list persistent volume pods failed")
 		}
-		pods = items.Items
+		pods = items
 	}
-	events, err := s.client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	events, err := s.listEvents(ctx, "", "list persistent volume events failed")
 	if err != nil {
 		return PVDetail{}, mapKubernetesError(err, "list persistent volume events failed")
 	}
-	return s.pvDetail(ctx, *pv, pvc, pods, events.Items), nil
+	return s.pvDetail(ctx, *pv, pvc, pods, events), nil
 }
 
 func (s *Service) ListStorageClasses(ctx context.Context, opts ListOptions) (pagination.Result[StorageClassSummary], error) {
 	if s.client == nil {
 		return pagination.Result[StorageClassSummary]{}, unavailable()
 	}
-	items, err := s.client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+	items, err := s.listStorageClasses(ctx, "list storageclasses failed")
 	if err != nil {
 		return pagination.Result[StorageClassSummary]{}, mapKubernetesError(err, "list storageclasses failed")
 	}
-	storageClasses := make([]StorageClassSummary, 0, len(items.Items))
-	for _, item := range items.Items {
+	storageClasses := make([]StorageClassSummary, 0, len(items))
+	for _, item := range items {
 		storageClasses = append(storageClasses, storageClassSummary(item))
 	}
 	sort.Slice(storageClasses, func(i, j int) bool {
@@ -2866,6 +2909,40 @@ func configMapSummary(item corev1.ConfigMap) ConfigMapSummary {
 	}
 }
 
+func secretSummary(item corev1.Secret) SecretSummary {
+	keys := make([]string, 0, len(item.Data))
+	for key := range item.Data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return SecretSummary{
+		Namespace: item.Namespace,
+		Name:      item.Name,
+		Type:      string(item.Type),
+		KeyCount:  len(keys),
+		Keys:      keys,
+		CreatedAt: item.CreationTimestamp.Time,
+	}
+}
+
+func secretDetail(item corev1.Secret) SecretDetail {
+	summary := secretSummary(item)
+	details := make([]SecretKeySummary, 0, len(summary.Keys))
+	for _, key := range summary.Keys {
+		details = append(details, SecretKeySummary{Name: key, SizeBytes: int64(len(item.Data[key]))})
+	}
+	immutable := false
+	if item.Immutable != nil {
+		immutable = *item.Immutable
+	}
+	return SecretDetail{
+		SecretSummary: summary,
+		Labels:        copyStringMap(item.Labels),
+		Immutable:     immutable,
+		KeyDetails:    details,
+	}
+}
+
 type pvcAssociations struct {
 	pods         []PodSummary
 	workloads    []OwnerReference
@@ -2956,18 +3033,18 @@ func (s *Service) findPVCAssociations(ctx context.Context, pvc corev1.Persistent
 		result.podUIDs[pod.Name] = string(pod.UID)
 		result.mounts = append(result.mounts, podVolumeMounts(pod, volumeNames)...)
 
-		chain := s.podControllerChain(ctx, pod)
-		if len(chain) == 0 {
+		resolution := s.mapper.PodController(ctx, pod)
+		if len(resolution.Chain) == 0 {
 			continue
 		}
-		workload := chain[len(chain)-1]
+		workload := resolution.Chain[len(resolution.Chain)-1]
 		key := resourceReferenceKey(workload.Kind, workload.Name)
 		if _, found := workloadSeen[key]; !found {
 			result.workloads = append(result.workloads, workload)
 			workloadSeen[key] = struct{}{}
 		}
-		if uid := topControllerUID(ctx, s.client, pod); uid != "" {
-			result.workloadUIDs[key] = uid
+		if resolution.TopUID != "" {
+			result.workloadUIDs[key] = resolution.TopUID
 		}
 	}
 	sort.Slice(result.pods, func(i, j int) bool {
@@ -2994,31 +3071,6 @@ func (s *Service) findPVCAssociations(ctx context.Context, pvc corev1.Persistent
 		return left.MountPath+left.DevicePath < right.MountPath+right.DevicePath
 	})
 	return result
-}
-
-func topControllerUID(ctx context.Context, client KubernetesClient, pod corev1.Pod) string {
-	controller, ok := controllerOwnerReference(pod.OwnerReferences)
-	if !ok {
-		return ""
-	}
-	uid := string(controller.UID)
-	switch strings.ToLower(controller.Kind) {
-	case "replicaset":
-		item, err := client.AppsV1().ReplicaSets(pod.Namespace).Get(ctx, controller.Name, metav1.GetOptions{})
-		if err == nil {
-			if parent, found := controllerOwnerReference(item.OwnerReferences); found {
-				uid = string(parent.UID)
-			}
-		}
-	case "job":
-		item, err := client.BatchV1().Jobs(pod.Namespace).Get(ctx, controller.Name, metav1.GetOptions{})
-		if err == nil {
-			if parent, found := controllerOwnerReference(item.OwnerReferences); found {
-				uid = string(parent.UID)
-			}
-		}
-	}
-	return uid
 }
 
 func podPVCVolumeNames(pod corev1.Pod, claimName string) map[string]struct{} {

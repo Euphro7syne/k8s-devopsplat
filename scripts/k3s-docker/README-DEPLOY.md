@@ -15,6 +15,16 @@ cd ops-platform-k3s-docker-*
 
 不要重复运行 `prepare-config.sh`，也不要把生成后的 Secret 文件提交到仓库或发送到不受信任的位置。
 
+仓库侧打包脚本只接受仍包含 `change-me-*` 占位符的 Secret 模板；检测到已初始化的 `deploy/k3s/server-secret.yaml` 时会拒绝生成验证包，避免真实凭据进入归档。
+
+如果服务器上已经存在 `ops-platform/ops-server-secrets`，不要在新验证包中重新运行 `prepare-config.sh`，否则会更换 PostgreSQL 密码和 TOTP 加密主密钥。升级现有部署时使用：
+
+```bash
+PRESERVE_EXISTING_SECRET=true ./deploy.sh
+```
+
+脚本会先确认集群内 Secret 已存在，再复用它部署新镜像；不会读取或输出 Secret 内容。
+
 验证包的 k3s 配置默认：
 
 - PostgreSQL 单副本 StatefulSet + 5Gi PVC。
@@ -63,13 +73,30 @@ docker images | grep -E 'ops-platform/ops-|postgres|nginx|busybox'
 ./verify-deployment.sh
 ```
 
-`deploy.sh` 会先部署并等待 PostgreSQL，再部署后端和前端。`verify-deployment.sh` 会检查：
+`deploy.sh` 会先部署并等待 PostgreSQL，再部署后端和前端，并显式滚动重启 `ops-server`/`ops-web`，确保同名 `latest` 镜像和最新 ConfigMap 被实际加载。`verify-deployment.sh` 会检查：
 
 - PostgreSQL StatefulSet、ops-server、ops-web 均完成 rollout。
 - PostgreSQL 六张基础表已创建。
 - 五个内置角色已初始化。
-- `/api/v1/healthz` 返回数据库健康状态。
+- `/api/v1/healthz` 明确返回 `database=ok`、`kubernetes=configured` 和 `resource_cache=ready`，避免只验到 Kubernetes API 回退路径。
+- Ingress 为无 Host 规则，可接收公网 IP 的 80 端口请求。
 - Pod、PVC 和 Service 状态。
+
+如需同时验证真实公网入口，传入从执行位置可访问的地址：
+
+```bash
+PUBLIC_BASE_URL=http://<公网-ip> ./verify-deployment.sh
+```
+
+该检查会访问公网入口的 `/api/v1/healthz` 和 `/`。是否可达仍取决于 Traefik、云安全组与主机防火墙。
+
+也可以使用统一入口执行基础检查并部署 demo：
+
+```bash
+./verify-p0.sh
+```
+
+默认不执行需要前置状态或会重建 Pod 的可选项。完成 MFA 绑定后可加 `VERIFY_MFA_STORAGE=true`；需要复验 PostgreSQL 持久性时必须同时显式设置 `VERIFY_POSTGRES_RESTART=true CONFIRM_RESTART=true`。`PUBLIC_BASE_URL` 会透传给入口检查。
 
 ## 4. MFA 场景 A
 
@@ -130,6 +157,7 @@ CONFIRM_RESTART=true ./verify-postgres-restart.sh
 4. 保存 Deployment/StatefulSet/DaemonSet YAML 后会出现配置生效提示；选择立即重启时，YAML 更新与 restart 分别生成审计记录。
 5. 对 Deployment、StatefulSet 或 DaemonSet 管理的 Pod 执行重启，确认原 Pod 被删除并由控制器创建替代 Pod。
 6. Pod 日志、Pod 显式删除与操作审计。
+7. `previous-log-demo` 容器完成一次真实重启后，`previous=true` 能读取上一次日志，且敏感 token 已脱敏。
 
 真实业务 namespace 首次只做查看和日志验证。
 

@@ -24,7 +24,7 @@
 | 节点 | 单节点 k3s | 平台部署 1 副本即可，不需要 HA |
 | Pod 数 | ~65 | 列表分页、Informer 缓存压力极小 |
 | Namespace | 4~6 个 | 不做多租户，只做角色分级 |
-| 并发用户 | 运维/开发若干 | 不引入缓存层；本地可用 SQLite，k3s 正式部署使用 PostgreSQL |
+| 并发用户 | 运维/开发若干 | 不引入 Redis 等外部缓存；Kubernetes 只读资源使用进程内 Informer，本地可用 SQLite，k3s 正式部署使用 PostgreSQL |
 | 日志量 | 中小 | Loki 单实例，保留 3~7 天 |
 
 ---
@@ -163,6 +163,8 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 | 能力 | Viewer | Operator | ConfigAdmin | Auditor | Admin |
 |---|:-:|:-:|:-:|:-:|:-:|
 | 查看资源 / 日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Secret 元数据 / key | | | ✅ | | ✅ |
+| Secret 单 key 明文（确认+审计） | | | | | ✅ |
 | 删除 Pod、扩缩容、重启 | | ✅ | | | ✅ |
 | 配置中心管理 | | | ✅ | | ✅ |
 | 审计 / 会话录像查看 | | | | ✅ | ✅ |
@@ -171,8 +173,12 @@ Kafka / RabbitMQ、ClickHouse / OpenSearch、ELK、Prometheus + Alertmanager 全
 ### 6.2 资源管理（`internal/resources` + `internal/workload`）
 
 - 统一封装：list / get / create / update / delete / patch / yaml 导出。
-- 当前详情接口已建立 Namespace/Node→Pod/顶层 Workload/关联资源、Pod↔Workload、Service↔Endpoint↔Pod、Ingress↔Service↔Pod 和 PVC↔PV↔Pod↔Workload 的只读关联；Namespace/Node 的 CPU/Memory/Pod 数据为 Capacity/Allocatable 和 Pod requests/limits 声明值，实时使用率留给 P1 metrics-server；后续用 Informer + 本地缓存和 `resource_mapper` 收敛重复 API 直查，不改变现有契约。
+- 当前详情接口已建立 Namespace/Node→Pod/顶层 Workload/关联资源、Pod↔Workload、Service↔Endpoint↔Pod、Ingress↔Service↔Pod 和 PVC↔PV↔Pod↔Workload 的只读关联；Namespace/Node 的 CPU/Memory/Pod 数据为 Capacity/Allocatable 和 Pod requests/limits 声明值，实时使用率留给 P1 metrics-server。
+- P0 非敏感只读资源通过进程内 typed Informer 缓存和 `resource_mapper` 解析关联；缓存未启用或未同步时自动回退 Kubernetes API，YAML/写操作继续直连。Secret 明确不进入共享 Informer，避免明文长期驻留缓存。
+- k3s 默认 Ingress 使用无 Host 规则，支持通过域名或公网 IP 的 80 端口访问；生产可收敛为固定域名并配置 TLS。
+- 资源页提供 Namespace Event 独立视图和 involved kind/name 筛选；事件聚合与告警留 P1。
 - PVC→PV 校验 volumeName 与 claimRef，PV→PVC 校验 claimRef namespace/name/UID 并拒绝冲突的 PVC volumeName；容器挂载覆盖普通/init/ephemeral container 的 mount/device，CSI 等卷源只返回非敏感摘要。
+- Secret 列表/详情仅向 ConfigAdmin/Admin 返回类型、labels、key 名与大小；Admin 可经 `confirm=true` 的独立 POST 审计接口读取单个 key。Secret 不进入通用 YAML，写入留给 P1 配置中心。
 - 写操作（delete/scale/restart/edit）统一走 `internal/workload`，并在中间件层记审计。
 
 ### 6.3 配置中心（`internal/configcenter`）
@@ -298,6 +304,9 @@ GET  /api/v1/namespaces/{ns}/services/{name}
 GET  /api/v1/namespaces/{ns}/ingresses
 GET  /api/v1/namespaces/{ns}/ingresses/{name}
 GET  /api/v1/namespaces/{ns}/configmaps
+GET  /api/v1/namespaces/{ns}/secrets
+GET  /api/v1/namespaces/{ns}/secrets/{name}
+POST /api/v1/namespaces/{ns}/secrets/{name}/values/{key}?confirm=true
 GET  /api/v1/namespaces/{ns}/persistentvolumeclaims
 GET  /api/v1/namespaces/{ns}/persistentvolumeclaims/{name}
 GET  /api/v1/persistentvolumes
@@ -552,6 +561,8 @@ make test-integration
 make build
 make deploy   # kubectl apply -f deploy/k3s
 ```
+
+服务器侧 P0 统一验收可使用 `scripts/k3s-docker/verify-p0.sh`；默认不执行 PostgreSQL Pod 重建等破坏性步骤，公网入口通过 `PUBLIC_BASE_URL` 显式验证。详细前置条件和开关见 `scripts/k3s-docker/README-DEPLOY.md`。
 
 k3s 清单默认部署单副本 PostgreSQL StatefulSet；数据库凭据由 `deploy/k3s/server-secret.yaml` 注入。存储配置、迁移和备份说明见 `docs/storage.md` 与 `docs/backup.md`。
 

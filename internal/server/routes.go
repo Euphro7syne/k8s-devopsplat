@@ -30,12 +30,13 @@ func (s *Server) registerRoutes() {
 
 	readAccess := s.requireRoles("viewer", "operator", "configadmin", "auditor", "admin")
 	writeAccess := s.requireRoles("operator", "admin")
+	secretReadAccess := s.requireRoles("configadmin", "admin")
 	auditAccess := s.requireRoles("auditor", "admin")
 	adminAccess := s.requireRoles("admin")
 
 	protected.GET("/clusters", readAccess, s.clusters)
 	authHandler.RegisterAdmin(protected, adminAccess)
-	resources.NewHandler(resources.NewService(s.kubeClient, "in-cluster")).Register(protected, readAccess, writeAccess)
+	resources.NewHandler(resources.NewCachedService(s.kubeClient, s.resourceCache, "in-cluster")).Register(protected, readAccess, writeAccess, secretReadAccess, adminAccess)
 	logHandler := logquery.NewHandler(logquery.NewService(s.kubeClient), s.cfg.Server.CORS.AllowedOrigins)
 	logHandler.Register(protected, readAccess)
 	websocketRoutes := s.engine.Group("/ws/v1")

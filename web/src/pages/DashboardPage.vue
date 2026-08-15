@@ -59,6 +59,24 @@ onMounted(loadDashboard)
         </div>
       </el-card>
       <el-card shadow="never">
+        <template #header>Kubernetes API</template>
+        <div class="metric">
+          <span class="metric-value">{{ health?.kubernetes ?? '-' }}</span>
+          <el-tag :type="health?.kubernetes === 'configured' ? 'success' : 'danger'">
+            {{ health?.kubernetes === 'configured' ? '已连接' : '不可用' }}
+          </el-tag>
+        </div>
+      </el-card>
+      <el-card shadow="never">
+        <template #header>资源缓存</template>
+        <div class="metric">
+          <span class="metric-value">{{ health?.resource_cache ?? '-' }}</span>
+          <el-tag :type="health?.resource_cache === 'ready' ? 'success' : 'warning'">
+            {{ health?.resource_cache === 'ready' ? '已就绪' : 'API 回退' }}
+          </el-tag>
+        </div>
+      </el-card>
+      <el-card shadow="never">
         <template #header>Namespace</template>
         <div class="metric">
           <span class="metric-value">{{ overview?.namespace_count ?? '-' }}</span>

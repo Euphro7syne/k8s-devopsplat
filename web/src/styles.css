@@ -280,6 +280,24 @@ input {
   margin-top: 16px;
 }
 
+.masked-secret-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.secret-value-alert {
+  margin-top: 18px;
+}
+
+.secret-value-view {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .yaml-toolbar {
   display: flex;
   justify-content: flex-end;

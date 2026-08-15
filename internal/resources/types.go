@@ -478,6 +478,35 @@ type ConfigMapSummary struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type SecretSummary struct {
+	Namespace string    `json:"namespace"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	KeyCount  int       `json:"key_count"`
+	Keys      []string  `json:"keys"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SecretKeySummary struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+type SecretDetail struct {
+	SecretSummary
+	Labels     map[string]string  `json:"labels"`
+	Immutable  bool               `json:"immutable"`
+	KeyDetails []SecretKeySummary `json:"key_details"`
+}
+
+type SecretValueResponse struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Encoding  string `json:"encoding"`
+}
+
 type PVCSummary struct {
 	Namespace    string    `json:"namespace"`
 	Name         string    `json:"name"`

@@ -18,9 +18,11 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware gin.HandlerFunc) {
+func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware, secretReadMiddleware, secretValueMiddleware gin.HandlerFunc) {
 	readMW := []gin.HandlerFunc{readMiddleware}
 	writeMW := []gin.HandlerFunc{writeMiddleware}
+	secretReadMW := []gin.HandlerFunc{secretReadMiddleware}
+	secretValueMW := []gin.HandlerFunc{secretValueMiddleware}
 
 	r.GET("/overview", append(readMW, h.overview)...)
 	r.GET("/namespaces", append(readMW, h.namespaces)...)
@@ -53,6 +55,9 @@ func (h *Handler) Register(r gin.IRoutes, readMiddleware, writeMiddleware gin.Ha
 	r.GET("/namespaces/:namespace/ingresses", append(readMW, h.ingresses)...)
 	r.GET("/namespaces/:namespace/ingresses/:name", append(readMW, h.ingressDetail)...)
 	r.GET("/namespaces/:namespace/configmaps", append(readMW, h.configMaps)...)
+	r.GET("/namespaces/:namespace/secrets", append(secretReadMW, h.secrets)...)
+	r.GET("/namespaces/:namespace/secrets/:name", append(secretReadMW, h.secretDetail)...)
+	r.POST("/namespaces/:namespace/secrets/:name/values/:key", append(secretValueMW, h.secretValue)...)
 	r.GET("/namespaces/:namespace/persistentvolumeclaims", append(readMW, h.pvcs)...)
 	r.GET("/namespaces/:namespace/persistentvolumeclaims/:name", append(readMW, h.pvcDetail)...)
 	r.GET("/persistentvolumes", append(readMW, h.pvs)...)
@@ -323,6 +328,39 @@ func (h *Handler) configMaps(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
+	response.Success(c, result)
+}
+
+func (h *Handler) secrets(c *gin.Context) {
+	result, err := h.service.ListSecrets(c.Request.Context(), c.Param("namespace"), parseListOptions(c))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) secretDetail(c *gin.Context) {
+	result, err := h.service.GetSecret(c.Request.Context(), c.Param("namespace"), c.Param("name"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *Handler) secretValue(c *gin.Context) {
+	if err := requireConfirm(c); err != nil {
+		response.Error(c, err)
+		return
+	}
+	result, err := h.service.ReadSecretValue(c.Request.Context(), c.Param("namespace"), c.Param("name"), c.Param("key"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
 	response.Success(c, result)
 }
 

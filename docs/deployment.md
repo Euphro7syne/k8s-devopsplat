@@ -36,12 +36,20 @@ scripts/k3s-docker/prepare-config.sh
 
 ## 部署与检查
 
+`kubernetes.cache` 默认启用进程内 Informer 缓存：`resync_period` 控制周期性重新同步，`sync_timeout` 控制启动阶段等待首次同步的最长时间。首次同步失败不会阻止 API 服务启动，资源读取会回退到 Kubernetes API；修复 RBAC/连接后需重启 `ops-server` 重新建立缓存。Secret 不进入该缓存。`/api/v1/healthz` 的 `resource_cache` 会报告 `ready/not_ready/disabled/unavailable`，其中 `not_ready` 是可用但走 API 回退的状态。
+
+默认 `deploy/k3s/ingress.yaml` 使用无 Host 规则，因此域名或公网 IP 的 80 端口请求都能按 `/api`、`/ws`、`/` 路径进入平台。生产环境如只允许固定域名访问，应在该规则上补回 `host`，并同步配置 DNS、TLS 与入口防火墙；公网可达性仍取决于云安全组、主机防火墙和 Traefik 的 80/443 监听。
+
 ```bash
 make deploy
 kubectl -n ops-platform rollout status statefulset/ops-postgres
 kubectl -n ops-platform rollout status deployment/ops-server
 kubectl -n ops-platform get pod,pvc,service
 ```
+
+k3s Docker 验证包提供统一入口 `scripts/k3s-docker/verify-p0.sh`。它默认执行非破坏性的数据库/服务/Informer/Ingress 规则和 demo 检查；需要真实公网验收时传入 `PUBLIC_BASE_URL=http://<公网-ip>`。MFA 存储检查需要已有绑定用户，PostgreSQL Pod 重建必须额外显式确认，详见 `scripts/k3s-docker/README-DEPLOY.md`。
+
+升级已有部署时必须保留集群内现有 `ops-server-secrets`，使用 `PRESERVE_EXISTING_SECRET=true ./deploy.sh`；不要重新生成 PostgreSQL 密码或 TOTP 主密钥。
 
 不要通过 `kubectl describe`、日志或调试命令打印 Secret 值。`ops-server` 启动时会按配置自动执行对应数据库方言的迁移。
 

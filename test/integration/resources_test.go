@@ -32,12 +32,20 @@ const (
 	podRestartRoute      = "/api/v1/namespaces/:namespace/pods/:pod/restart"
 	cronJobSuspendRoute  = "/api/v1/namespaces/:namespace/cronjobs/:name/suspend"
 	cronJobResumeRoute   = "/api/v1/namespaces/:namespace/cronjobs/:name/resume"
+	secretValueRoute     = "/api/v1/namespaces/:namespace/secrets/:name/values/:key"
 )
 
 type apiEnvelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
+}
+
+type healthStatus struct {
+	Status        string `json:"status"`
+	Database      string `json:"database"`
+	Kubernetes    string `json:"kubernetes"`
+	ResourceCache string `json:"resource_cache"`
 }
 
 type integrationClient struct {
@@ -313,17 +321,94 @@ type auditLog struct {
 	Namespace    string `json:"namespace"`
 }
 
+type secretSummary struct {
+	Namespace string   `json:"namespace"`
+	Name      string   `json:"name"`
+	Type      string   `json:"type"`
+	KeyCount  int      `json:"key_count"`
+	Keys      []string `json:"keys"`
+}
+
+type secretDetail struct {
+	secretSummary
+	Labels map[string]string `json:"labels"`
+	Keys   []struct {
+		Name      string `json:"name"`
+		SizeBytes int64  `json:"size_bytes"`
+	} `json:"key_details"`
+}
+
+type secretValue struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Encoding  string `json:"encoding"`
+}
+
 func TestStatefulSetAndPodRestartWorkflow(t *testing.T) {
 	client := newIntegrationClient(t)
+	healthResponse := client.request(t, http.MethodGet, "/api/v1/healthz", nil, http.StatusOK)
+	var health healthStatus
+	decodeData(t, healthResponse, &health)
+	if health.Status != "ok" || health.Database != "ok" || health.Kubernetes != "configured" || health.ResourceCache != "ready" {
+		t.Fatalf("integration server is not using a ready Kubernetes cache: %#v", health)
+	}
 	client.login(t)
 
 	kubectl(t, 4*time.Minute, "-n", demoNamespace, "rollout", "status", "deployment/nginx-demo", "--timeout=180s")
 	kubectl(t, 4*time.Minute, "-n", demoNamespace, "rollout", "status", "deployment/log-demo", "--timeout=180s")
+	waitForContainerRestart(t, "app=previous-log-demo", "logger", 2*time.Minute)
 	kubectl(t, 4*time.Minute, "-n", demoNamespace, "rollout", "status", "statefulset/"+statefulSetName, "--timeout=180s")
 	kubectl(t, 4*time.Minute, "-n", demoNamespace, "rollout", "status", "daemonset/"+daemonSetName, "--timeout=180s")
 	kubectl(t, 2*time.Minute, "-n", demoNamespace, "wait", "--for=condition=Ready", "pod/"+standalonePodName, "--timeout=120s")
 	kubectl(t, 2*time.Minute, "-n", demoNamespace, "wait", "--for=condition=complete", "job/"+jobName, "--timeout=120s")
 	kubectl(t, 3*time.Minute, "-n", demoNamespace, "wait", "--for=condition=complete", "job", "-l", "app=cronjob-demo", "--timeout=150s")
+
+	t.Run("secret safe read and audited single-key plaintext", func(t *testing.T) {
+		response := client.request(t, http.MethodGet, "/api/v1/namespaces/demo-app/secrets", nil, http.StatusOK)
+		if strings.Contains(string(response.Data), "integration-placeholder-value") {
+			t.Fatalf("Secret list leaked plaintext: %s", response.Data)
+		}
+		var page struct {
+			Items []secretSummary `json:"items"`
+		}
+		decodeData(t, response, &page)
+		found := false
+		for _, item := range page.Items {
+			if item.Name == "safe-read-demo" {
+				found = true
+				if item.Namespace != demoNamespace || item.KeyCount != 2 || strings.Join(item.Keys, ",") != "password,username" {
+					t.Fatalf("unexpected Secret list metadata: %#v", item)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("safe-read-demo Secret missing from list: %#v", page.Items)
+		}
+
+		response = client.request(t, http.MethodGet, "/api/v1/namespaces/demo-app/secrets/safe-read-demo", nil, http.StatusOK)
+		if strings.Contains(string(response.Data), "integration-placeholder-value") {
+			t.Fatalf("Secret detail leaked plaintext: %s", response.Data)
+		}
+		var detail secretDetail
+		decodeData(t, response, &detail)
+		if detail.Name != "safe-read-demo" || detail.Labels["app"] != "safe-read-demo" || len(detail.Keys) != 2 {
+			t.Fatalf("unexpected Secret detail: %#v", detail)
+		}
+
+		client.request(t, http.MethodPost, "/api/v1/namespaces/demo-app/secrets/safe-read-demo/values/password", nil, http.StatusBadRequest)
+		response = client.request(t, http.MethodPost, "/api/v1/namespaces/demo-app/secrets/safe-read-demo/values/password?confirm=true", nil, http.StatusOK)
+		var value secretValue
+		decodeData(t, response, &value)
+		if value.Namespace != demoNamespace || value.Name != "safe-read-demo" || value.Key != "password" || value.Value != "integration-placeholder-value" || value.Encoding != "utf-8" {
+			t.Fatalf("unexpected single-key Secret value: %#v", value)
+		}
+		if strings.Contains(string(response.Data), "integration-user") {
+			t.Fatalf("unrequested Secret key leaked: %s", response.Data)
+		}
+		client.request(t, http.MethodPost, "/api/v1/namespaces/demo-app/secrets/safe-read-demo/values/missing?confirm=true", nil, http.StatusNotFound)
+	})
 
 	t.Run("deployment detail associations", func(t *testing.T) {
 		response := client.request(t, http.MethodGet, "/api/v1/namespaces/demo-app/deployments/log-demo", nil, http.StatusOK)
@@ -756,6 +841,22 @@ func TestStatefulSetAndPodRestartWorkflow(t *testing.T) {
 		}
 	})
 
+	t.Run("previous pod logs are retained and sanitized", func(t *testing.T) {
+		podName := strings.TrimSpace(kubectl(t, 30*time.Second, "-n", demoNamespace, "get", "pods", "-l", "app=previous-log-demo", "-o", "jsonpath={.items[0].metadata.name}"))
+		if podName == "" {
+			t.Fatal("previous-log-demo pod not found")
+		}
+		response := client.request(t, http.MethodGet, "/api/v1/namespaces/demo-app/pods/"+podName+"/logs?container=logger&previous=true&keyword=previous-demo&limit=20", nil, http.StatusOK)
+		var previous logResult
+		decodeData(t, response, &previous)
+		if len(previous.Lines) == 0 || !strings.Contains(previous.Lines[0].Raw, "msg=previous-demo") {
+			t.Fatalf("unexpected previous log result: %#v", previous)
+		}
+		if strings.Contains(previous.Lines[0].Raw, "integration-log-placeholder") || !strings.Contains(previous.Lines[0].Raw, "token=***") {
+			t.Fatalf("previous log value was not sanitized: %s", previous.Lines[0].Raw)
+		}
+	})
+
 	t.Run("standalone pod restart rejected", func(t *testing.T) {
 		oldUID := podUID(t, standalonePodName)
 		response := client.request(t, http.MethodPost, "/api/v1/namespaces/demo-app/pods/standalone-demo/restart?confirm=true", nil, http.StatusConflict)
@@ -783,6 +884,9 @@ func TestStatefulSetAndPodRestartWorkflow(t *testing.T) {
 		}
 		if countAudit(items, cronJobSuspendRoute) < 1 || countAudit(items, cronJobResumeRoute) < 1 {
 			t.Fatalf("expected CronJob suspend and resume audit records, got %#v", items)
+		}
+		if countAudit(items, secretValueRoute) < 3 {
+			t.Fatalf("expected confirmed, unconfirmed and missing-key Secret value audit records, got %#v", items)
 		}
 	})
 }
@@ -972,6 +1076,22 @@ func waitForControllerReplacement(t *testing.T, selector, oldUID string, expecte
 	t.Fatalf("controller did not replace pod UID %s within %s", oldUID, timeout)
 }
 
+func waitForContainerRestart(t *testing.T, selector, container string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		output, err := kubectlOutput(ctx, "-n", demoNamespace, "get", "pods", "-l", selector, "-o", "jsonpath={.items[0].status.containerStatuses[?(@.name==\""+container+"\")].restartCount}")
+		cancel()
+		if err == nil && strings.TrimSpace(output) != "" && strings.TrimSpace(output) != "0" {
+			kubectl(t, 2*time.Minute, "-n", demoNamespace, "wait", "--for=condition=Ready", "pod", "-l", selector, "--timeout=120s")
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("container %s for selector %s did not restart within %s", container, selector, timeout)
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1007,7 +1127,8 @@ func waitForAuditRecords(t *testing.T, client *integrationClient, timeout time.D
 			countAudit(last, daemonRestartRoute) >= 2 &&
 			countAudit(last, podRestartRoute) >= 4 &&
 			countAudit(last, cronJobSuspendRoute) >= 1 &&
-			countAudit(last, cronJobResumeRoute) >= 1 {
+			countAudit(last, cronJobResumeRoute) >= 1 &&
+			countAudit(last, secretValueRoute) >= 3 {
 			return last
 		}
 		time.Sleep(250 * time.Millisecond)

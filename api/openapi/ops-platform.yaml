@@ -963,6 +963,75 @@ paths:
       responses:
         "200":
           description: ConfigMap page
+  /namespaces/{namespace}/secrets:
+    get:
+      summary: List secret metadata and keys
+      description: Restricted to ConfigAdmin and Admin. Secret values are never returned by this endpoint.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Secret metadata page without values
+  /namespaces/{namespace}/secrets/{name}:
+    get:
+      summary: Get secret metadata and key details
+      description: Restricted to ConfigAdmin and Admin. Returns labels, type, immutable state, key names and byte sizes only; Secret values are never returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Secret detail without values
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SecretDetail"
+  /namespaces/{namespace}/secrets/{name}/values/{key}:
+    post:
+      summary: Read one decoded secret value
+      description: Restricted to Admin and requires confirm=true. This write-like read is audited. Only the requested key is returned; invalid UTF-8 bytes are returned as base64 with encoding=base64.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+        - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/SecretKey"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+            enum:
+              - true
+      responses:
+        "200":
+          description: Requested Secret key value
+          headers:
+            Cache-Control:
+              description: Secret plaintext responses are never cacheable.
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ResponseEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SecretValueResponse"
   /namespaces/{namespace}/persistentvolumeclaims:
     get:
       summary: List persistent volume claims
@@ -1091,6 +1160,12 @@ components:
         type: string
     Name:
       name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    SecretKey:
+      name: key
       in: path
       required: true
       schema:
@@ -2046,6 +2121,85 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/EventSummary"
+    SecretSummary:
+      type: object
+      required:
+        - namespace
+        - name
+        - type
+        - key_count
+        - keys
+        - created_at
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        key_count:
+          type: integer
+        keys:
+          type: array
+          items:
+            type: string
+          description: Sorted key names only; values are never included.
+        created_at:
+          type: string
+          format: date-time
+    SecretKeySummary:
+      type: object
+      required:
+        - name
+        - size_bytes
+      properties:
+        name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+    SecretDetail:
+      allOf:
+        - $ref: "#/components/schemas/SecretSummary"
+        - type: object
+          required:
+            - labels
+            - immutable
+            - key_details
+          properties:
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            immutable:
+              type: boolean
+            key_details:
+              type: array
+              items:
+                $ref: "#/components/schemas/SecretKeySummary"
+    SecretValueResponse:
+      type: object
+      required:
+        - namespace
+        - name
+        - key
+        - value
+        - encoding
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        key:
+          type: string
+        value:
+          type: string
+        encoding:
+          type: string
+          enum:
+            - utf-8
+            - base64
     PVCSummary:
       type: object
       properties:
@@ -2247,6 +2401,8 @@ components:
       required:
         - status
         - database
+        - kubernetes
+        - resource_cache
         - time
       properties:
         status:
@@ -2259,6 +2415,19 @@ components:
           enum:
             - ok
             - error
+        kubernetes:
+          type: string
+          enum:
+            - configured
+            - unavailable
+        resource_cache:
+          type: string
+          description: Cache readiness is informational; not_ready falls back to direct Kubernetes API reads and does not make healthz fail.
+          enum:
+            - ready
+            - not_ready
+            - disabled
+            - unavailable
         time:
           type: string
           format: date-time

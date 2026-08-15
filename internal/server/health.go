@@ -12,16 +12,29 @@ import (
 )
 
 type healthResponse struct {
-	Status   string `json:"status"`
-	Database string `json:"database"`
-	Time     string `json:"time"`
+	Status        string `json:"status"`
+	Database      string `json:"database"`
+	Kubernetes    string `json:"kubernetes"`
+	ResourceCache string `json:"resource_cache"`
+	Time          string `json:"time"`
 }
 
 func (s *Server) healthz(c *gin.Context) {
 	payload := healthResponse{
-		Status:   "ok",
-		Database: "ok",
-		Time:     time.Now().UTC().Format(time.RFC3339),
+		Status:        "ok",
+		Database:      "ok",
+		Kubernetes:    "configured",
+		ResourceCache: "disabled",
+		Time:          time.Now().UTC().Format(time.RFC3339),
+	}
+	if s.kubeClient == nil {
+		payload.Kubernetes = "unavailable"
+		payload.ResourceCache = "unavailable"
+	} else if s.cfg != nil && s.cfg.Kubernetes.Cache.Enabled {
+		payload.ResourceCache = "not_ready"
+		if s.resourceCache != nil && s.resourceCache.Ready() {
+			payload.ResourceCache = "ready"
+		}
 	}
 
 	if s.store != nil {

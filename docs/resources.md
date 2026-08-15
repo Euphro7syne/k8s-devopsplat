@@ -1,6 +1,6 @@
 # P0 资源管理
 
-资源管理模块通过 Kubernetes API 提供列表、详情、YAML 查看和受控写操作。读取接口面向 `viewer/operator/configadmin/auditor/admin`，写接口仅面向 `operator/admin`，所有 POST/PUT/DELETE 请求统一经过审计中间件。
+资源管理模块通过 Kubernetes API 提供列表、详情、YAML 查看和受控写操作。通用读取接口面向 `viewer/operator/configadmin/auditor/admin`，Secret 元数据读取仅面向 `configadmin/admin`，写接口仅面向 `operator/admin`；Secret 单 key 明文读取仅面向 `admin`。所有 POST/PUT/DELETE 请求统一经过审计中间件。
 
 P0 各资源的实际完成度与后续顺序统一维护在 [p0-status.md](p0-status.md)，不能再把“已有列表接口”等同于“完整闭环”。
 
@@ -44,6 +44,10 @@ Kubernetes API 日志不是长期日志库，只能读取节点仍保留的当�
 
 REST 和 WebSocket 日志行在返回前统一经过现有 `sanitizer`。WebSocket JWT 使用 `Sec-WebSocket-Protocol` 携带，不放入 URL query，避免进入代理访问日志。
 
+## Event 视图
+
+资源页提供当前 Namespace 的独立 Event 视图，默认按最后发生时间倒序，并支持按 `involved_kind` 和 `involved_name` 精确筛选。各资源详情仍保留 UID 安全的关联 Event，方便从对象上下文直接下钻。Event 聚合、去重、告警和 webhook 属于 P1，不在 P0 视图中伪装实现。
+
 ## Deployment 诊断详情
 
 Deployment 详情用于从工作负载直接下钻到故障 Pod，当前包含：
@@ -54,7 +58,17 @@ Deployment 详情用于从工作负载直接下钻到故障 Pod，当前包含�
 - 通过 ReplicaSet `OwnerReferences` 继续识别的关联 Pod，可直接打开 Pod 诊断详情与历史/实时日志。
 - 汇总 Deployment、直属 ReplicaSet 和关联 Pod 的 Event，并按最后发生时间倒序展示。
 
-当前实现按 Namespace 读取 ReplicaSet、Pod 和 Event 后建立关联，符合 P0 单节点、小规模集群假设。后续第 7 项会通过 informer/cache 和资源关联 mapper 减少重复直查，但不会改变 API 契约。
+当前实现通过进程内 typed Informer 缓存读取 Deployment、ReplicaSet、Pod 和 Event，并由 resource mapper 校验 OwnerReference UID 后建立控制器链；缓存未启用或尚未同步时自动回退 Kubernetes API，API 契约不变。
+
+## Informer 缓存与资源映射
+
+P0 使用 client-go typed Informer 缓存 Namespace、Node、Pod、Event、Workload、Service/EndpointSlice/Endpoints、Ingress、PV/PVC/StorageClass 和 ConfigMap。实现只注册资源模块实际使用的 API 类型，不创建全量 SharedInformerFactory，避免引入不相关 API 组和额外内存开销。
+
+- 列表、详情和关联查询优先读取 informer lister，减少同一详情请求中的重复 Namespace 全量 List。
+- Pod→ReplicaSet→Deployment、Pod→Job→CronJob 由 resource mapper 解析，并校验 owner UID，避免同名旧对象错误关联。
+- 缓存启动异步进行；同步超时或禁用时资源服务保持可用并回退 Kubernetes API。
+- YAML 读取、资源写入、Pod 日志继续直连 Kubernetes API，避免写后读取受缓存最终一致性影响。
+- Secret 不注册 informer，Secret 元数据和受控单 key 明文始终直查 Kubernetes API。
 
 ## ReplicaSet 诊断详情
 
@@ -118,7 +132,19 @@ Ingress 详情用于从入口规则一路确认到最终 Pod，当前包含：
 - 汇总 Ingress、关联 Service、EndpointSlice/Endpoints 和 Pod Event，并按对象 UID 排除同名旧资源遗留事件。
 - 前端可从后端 Service 打开完整 Service 详情，也可从后端 Pod 下钻诊断详情和历史/实时日志。
 
-本详情接口只读，不新增 Ingress 删除或其他高风险写操作。公网 IP `:80` 的无 Host 访问规则属于部署入口策略，继续作为独立任务实施；当前 Host-only Ingress 不会自动匹配直接 IP 请求。
+本详情接口只读，不新增 Ingress 删除或其他高风险写操作。部署清单已使用无 Host 默认规则，使公网 IP `:80` 或任意域名请求都能命中平台入口；生产环境可按安全策略收敛为固定域名并配置 TLS。
+
+## Secret 安全只读
+
+Secret 只开放最小读取面，和 ConfigMap/YAML 通用读取彻底隔离：
+
+- `GET /api/v1/namespaces/{namespace}/secrets` 与 `GET /api/v1/namespaces/{namespace}/secrets/{name}` 仅允许 `configadmin/admin`，只返回 namespace、name、type、labels、immutable、创建时间、排序后的 key 名和每个值的 byte 大小。
+- 列表和详情 DTO 不包含 value 字段，后端单测会对序列化结果做明文防泄漏检查；通用 `/resources/yaml` 不支持 Secret，前端也不提供 Secret YAML 入口。
+- `POST /api/v1/namespaces/{namespace}/secrets/{name}/values/{key}?confirm=true` 仅允许 `admin`，每次只读取一个 key，前端要求高敏二次确认，POST 请求进入审计。
+- UTF-8 值按 `encoding=utf-8` 返回；二进制值按 `encoding=base64` 返回。响应显式设置 `Cache-Control: no-store`，接口不会同时返回其他 key，也不会把明文写入请求体、错误消息或默认页面状态。
+- ConfigAdmin 只能查看脱敏元数据；Admin 关闭详情后，前端立即清除已显示的明文状态。Secret 写入仍保持关闭，只能在 P1 配置中心版本发布链路中实现。
+
+Kubernetes ServiceAccount 仅新增 `secrets get/list/watch`，没有 create/update/patch/delete；这表示平台进程具备读取能力，但平台角色中间件继续收敛到上述 ConfigAdmin/Admin 边界。
 
 ## PVC/PV 存储关联详情
 
@@ -197,6 +223,9 @@ Pod 重启使用独立 POST 路由，审计记录能够和显式 DELETE Pod 区�
 - StatefulSet PVC→Pod/StatefulSet/挂载路径关联，以及 PV→PVC/Pod/Workload 反查。
 - Namespace 资源计数、有效 Pod requests/limits、关联资源与顶层 Workload；Node Capacity/Allocatable/Requests、Pod/Workload 与健康详情。
 - 独立 Pod 重启返回 HTTP 409，且不会被删除。
+- 当前日志与 WebSocket follow；通过一次真实容器重启验证 `previous=true` 的上一次容器日志，并确认敏感 token 被 sanitizer 脱敏。
+- Secret 列表/详情不泄露 value，Admin 单 key 明文读取要求 `confirm=true` 并落审计。
+- integration 用例开始前强制断言 `resource_cache=ready`，避免只覆盖 Kubernetes API fallback。
 - StatefulSet scale/restart 与 Pod restart 的审计记录落入 SQLite。
 - DaemonSet 详情、滚动重启、OnDelete 冲突和审计记录。
 

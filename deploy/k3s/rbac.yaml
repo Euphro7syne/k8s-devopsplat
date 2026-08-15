@@ -27,6 +27,7 @@ rules:
       - persistentvolumeclaims
       - persistentvolumes
       - pods
+      - secrets
       - services
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]

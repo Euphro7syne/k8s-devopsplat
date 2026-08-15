@@ -467,6 +467,34 @@ export interface ConfigMapSummary {
   created_at: string
 }
 
+export interface SecretSummary {
+  namespace: string
+  name: string
+  type: string
+  key_count: number
+  keys: string[]
+  created_at: string
+}
+
+export interface SecretKeySummary {
+  name: string
+  size_bytes: number
+}
+
+export interface SecretDetail extends SecretSummary {
+  labels: Record<string, string> | null
+  immutable: boolean
+  key_details: SecretKeySummary[]
+}
+
+export interface SecretValueResponse {
+  namespace: string
+  name: string
+  key: string
+  value: string
+  encoding: 'utf-8' | 'base64'
+}
+
 export interface PVCSummary {
   namespace: string
   name: string
@@ -796,6 +824,29 @@ export function listConfigMaps(namespace: string, page = 1, pageSize = 20) {
     method: 'GET',
     url: `/namespaces/${namespace}/configmaps`,
     params: { page, page_size: pageSize }
+  })
+}
+
+export function listSecrets(namespace: string, page = 1, pageSize = 20) {
+  return request<PageResult<SecretSummary>>({
+    method: 'GET',
+    url: `/namespaces/${encodeURIComponent(namespace)}/secrets`,
+    params: { page, page_size: pageSize }
+  })
+}
+
+export function getSecret(namespace: string, name: string) {
+  return request<SecretDetail>({
+    method: 'GET',
+    url: `/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(name)}`
+  })
+}
+
+export function readSecretValue(namespace: string, name: string, key: string) {
+  return request<SecretValueResponse>({
+    method: 'POST',
+    url: `/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(name)}/values/${encodeURIComponent(key)}`,
+    params: { confirm: true }
   })
 }
 

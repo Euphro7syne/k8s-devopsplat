@@ -89,6 +89,9 @@ GET  /api/v1/namespaces/{namespace}/services/{name}
 GET  /api/v1/namespaces/{namespace}/ingresses
 GET  /api/v1/namespaces/{namespace}/ingresses/{name}
 GET  /api/v1/namespaces/{namespace}/configmaps
+GET  /api/v1/namespaces/{namespace}/secrets
+GET  /api/v1/namespaces/{namespace}/secrets/{name}
+POST /api/v1/namespaces/{namespace}/secrets/{name}/values/{key}?confirm=true
 GET  /api/v1/namespaces/{namespace}/persistentvolumeclaims
 GET  /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}
 GET  /api/v1/persistentvolumes
@@ -107,12 +110,12 @@ CronJob suspend/resume 仅允许 `operator/admin`，后端强制要求 `confirm=
 
 Service 详情优先使用 EndpointSlice，只有在不存在 EndpointSlice 时才回退同名传统 Endpoints，避免端点重复。关联 Pod 同时覆盖 selector 命中和 endpoint targetRef；接口为只读诊断能力，不新增 Service 删除权限。
 
-Ingress 详情返回默认后端与 Host/Path 规则，并校验 Service backend 的 Service 和端口是否存在；重复 Service 只展开一次完整 ServiceDetail。Ingress、Service、EndpointSlice/Endpoints 和 Pod Event 按 UID 过滤关联。公网无 Host/IP 入口不由该读取接口隐式修改，继续按独立部署任务处理。
+Ingress 详情返回默认后端与 Host/Path 规则，并校验 Service backend 的 Service 和端口是否存在；重复 Service 只展开一次完整 ServiceDetail。Ingress、Service、EndpointSlice/Endpoints 和 Pod Event 按 UID 过滤关联。公网无 Host/IP 入口由 `deploy/k3s/ingress.yaml` 的部署规则处理，资源读取接口不会隐式修改入口配置。
 
 PVC→PV 通过 PVC volumeName 与 PV claimRef 校验，PV→PVC 依据 claimRef namespace/name/UID 解析且拒绝冲突的 PVC volumeName；详情继续关联实际引用 Claim 的 Pod、顶层 Workload、容器挂载/块设备路径和 Event。卷源只返回安全摘要，CSI `volumeAttributes`、volume handle 和所有 SecretRef 均不进入响应；详情接口只读，不开放删除、扩容或 StorageClass 修改。
 
 Namespace 详情返回 Labels/Finalizers/Conditions、资源数量、非终态 Pod 的有效 requests/limits、Pod/顶层 Workload/Service/Ingress/PVC 和 Namespace 自身 Event；Namespace YAML 支持只读导出，删除无 API。Node 详情返回 roles、地址、污点、Conditions、系统信息、Capacity/Allocatable、有效 Pod requests/limits、声明占比、Pod/顶层 Workload 和 Node 自身 Event。声明占比不等同于实时使用率，Node 写操作与指定调度均无 API。
 
-YAML 更新仅开放 `deployment/statefulset/daemonset/job/cronjob/service/ingress`，由 `operator/admin` 调用并经过审计中间件。ConfigMap 仍必须走配置中心流程，Secret 仍未纳入阶段 1 的通用列表与 YAML 导出。后续启用 Secret 时必须保持列表脱敏、明文读取受角色控制，并同步 Kubernetes RBAC。
+YAML 更新仅开放 `deployment/statefulset/daemonset/job/cronjob/service/ingress`，由 `operator/admin` 调用并经过审计中间件。ConfigMap 仍必须走配置中心流程。Secret 不纳入通用 YAML 导出：列表/详情仅允许 `configadmin/admin` 且只返回 key 元数据，单 key 明文 POST 仅允许 `admin`、强制 `confirm=true` 并记录审计；Secret 写入继续关闭。
 
 `auth.mfa_enabled=true` 时，MFA 登录响应返回 `mfa_required=true`、`mfa_setup_required` 和短时 `mfa_token`，此时不会返回 access/refresh token；首次绑定先调用 `auth/mfa/setup` 获取 TOTP URI，再用 `auth/mfa/verify` 完成绑定并取得 JWT。`auth.mfa_enabled=false` 时，密码校验成功后直接签发 JWT，不进入动态码流程。登录与 MFA Verify 默认启用失败速率限制，达到阈值返回 HTTP `429`。管理员重置 MFA 属于删除类操作，必须携带 `confirm=true`。

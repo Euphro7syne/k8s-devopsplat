@@ -15,12 +15,14 @@ import (
 )
 
 type Server struct {
-	cfg         *config.Config
-	store       store.Store
-	log         *slog.Logger
-	authService *auth.Service
-	kubeClient  resources.KubernetesClient
-	engine      *gin.Engine
+	cfg           *config.Config
+	store         store.Store
+	log           *slog.Logger
+	authService   *auth.Service
+	kubeClient    resources.KubernetesClient
+	resourceCache *k8s.ResourceCache
+	cacheCancel   context.CancelFunc
+	engine        *gin.Engine
 }
 
 func New(cfg *config.Config, store store.Store, log *slog.Logger) *Server {
@@ -44,10 +46,40 @@ func New(cfg *config.Config, store store.Store, log *slog.Logger) *Server {
 		kubeClient:  kubeClient,
 		engine:      gin.New(),
 	}
+	if kubeClient != nil && cfg.Kubernetes.Cache.Enabled {
+		cacheCtx, cancel := context.WithCancel(context.Background())
+		s.cacheCancel = cancel
+		s.resourceCache = k8s.NewResourceCache(kubeClient, cfg.Kubernetes.Cache.ResyncPeriod)
+		go func() {
+			if err := s.resourceCache.Start(cacheCtx, cfg.Kubernetes.Cache.SyncTimeout); err != nil {
+				wasRunning := cacheCtx.Err() == nil
+				cancel()
+				if wasRunning && log != nil {
+					log.Warn("kubernetes resource cache unavailable; falling back to direct API reads", "error", err)
+				}
+				return
+			}
+			if log != nil {
+				log.Info("kubernetes resource cache ready")
+			}
+		}()
+	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
 	return s.engine
+}
+
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	if s.cacheCancel != nil {
+		s.cacheCancel()
+	}
+	if s.resourceCache != nil {
+		s.resourceCache.Shutdown()
+	}
 }

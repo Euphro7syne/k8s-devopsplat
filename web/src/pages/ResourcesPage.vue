@@ -17,6 +17,7 @@ import {
   getPVC,
   getPod,
   getReplicaSet,
+  getSecret,
   getService,
   getStatefulSet,
   getPodLogs,
@@ -34,6 +35,7 @@ import {
   listPVCs,
   listPVs,
   listReplicaSets,
+  listSecrets,
   listServices,
   listStatefulSets,
   listStorageClasses,
@@ -44,6 +46,7 @@ import {
   restartStatefulSet,
   scaleDeployment,
   scaleStatefulSet,
+  readSecretValue,
   suspendCronJob,
   updateResourceYAML,
   type ConfigMapSummary,
@@ -72,6 +75,9 @@ import {
   type PVSummary,
   type ResourceKind,
   type ReplicaSetDetail,
+  type SecretDetail,
+  type SecretSummary,
+  type SecretValueResponse,
   type ServiceDetail,
   type ServiceSummary,
   type StorageClassSummary,
@@ -79,14 +85,17 @@ import {
   type WorkloadSummary
 } from '../api/resources'
 import AppShell from '../components/AppShell.vue'
+import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/time'
 
-type ResourceGroup = 'workloads' | 'pods' | 'network' | 'config' | 'storage' | 'nodes'
+type ResourceGroup = 'workloads' | 'pods' | 'network' | 'config' | 'storage' | 'events' | 'nodes'
 type WorkloadKind = 'deployments' | 'statefulsets' | 'daemonsets' | 'replicasets' | 'jobs' | 'cronjobs'
 type NetworkKind = 'services' | 'ingresses'
+type ConfigKind = 'configmaps' | 'secrets'
 type StorageKind = 'pvcs' | 'pvs' | 'storageclasses'
 
 const pageSize = 100
+const authStore = useAuthStore()
 
 const namespaces = ref<NamespaceSummary[]>([])
 const namespace = ref('')
@@ -94,6 +103,7 @@ const initialized = ref(false)
 const activeGroup = ref<ResourceGroup>('workloads')
 const activeWorkload = ref<WorkloadKind>('deployments')
 const activeNetwork = ref<NetworkKind>('services')
+const activeConfig = ref<ConfigKind>('configmaps')
 const activeStorage = ref<StorageKind>('pvcs')
 
 const nodes = ref<PageResult<NodeSummary> | null>(null)
@@ -107,9 +117,12 @@ const cronJobs = ref<PageResult<CronJobSummary> | null>(null)
 const services = ref<PageResult<ServiceSummary> | null>(null)
 const ingresses = ref<PageResult<IngressSummary> | null>(null)
 const configMaps = ref<PageResult<ConfigMapSummary> | null>(null)
+const secrets = ref<PageResult<SecretSummary> | null>(null)
 const pvcs = ref<PageResult<PVCSummary> | null>(null)
 const pvs = ref<PageResult<PVSummary> | null>(null)
 const storageClasses = ref<PageResult<StorageClassSummary> | null>(null)
+const events = ref<EventSummary[]>([])
+const eventFilters = reactive({ involved_kind: '', involved_name: '' })
 
 const loading = ref(false)
 const logsLoading = ref(false)
@@ -158,6 +171,12 @@ const namespaceDetail = ref<NamespaceDetail | null>(null)
 const nodeDetailVisible = ref(false)
 const nodeDetailLoading = ref(false)
 const nodeDetail = ref<NodeDetail | null>(null)
+const secretDetailVisible = ref(false)
+const secretDetailLoading = ref(false)
+const secretDetail = ref<SecretDetail | null>(null)
+const secretValueVisible = ref(false)
+const secretValueLoading = ref(false)
+const secretValue = ref<SecretValueResponse | null>(null)
 const yamlVisible = ref(false)
 const yamlText = ref('')
 const yamlTitle = ref('YAML')
@@ -182,6 +201,7 @@ const groupOptions = [
   { label: 'Network', name: 'network' },
   { label: 'Config', name: 'config' },
   { label: 'Storage', name: 'storage' },
+  { label: 'Events', name: 'events' },
   { label: 'Nodes', name: 'nodes' }
 ]
 const workloadOptions = [
@@ -196,6 +216,15 @@ const networkOptions = [
   { label: 'Services', value: 'services' },
   { label: 'Ingresses', value: 'ingresses' }
 ]
+const canReadSecrets = computed(() => authStore.hasAnyRole(['configadmin']))
+const canReadSecretValues = computed(() => authStore.roles.includes('admin'))
+const configOptions = computed(() => {
+  const options = [{ label: 'ConfigMaps', value: 'configmaps' }]
+  if (canReadSecrets.value) {
+    options.push({ label: 'Secrets', value: 'secrets' })
+  }
+  return options
+})
 const storageOptions = [
   { label: 'PVC', value: 'pvcs' },
   { label: 'PV', value: 'pvs' },
@@ -222,9 +251,11 @@ const cronJobRows = computed(() => cronJobs.value?.items ?? [])
 const serviceRows = computed(() => services.value?.items ?? [])
 const ingressRows = computed(() => ingresses.value?.items ?? [])
 const configMapRows = computed(() => configMaps.value?.items ?? [])
+const secretRows = computed(() => secrets.value?.items ?? [])
 const pvcRows = computed(() => pvcs.value?.items ?? [])
 const pvRows = computed(() => pvs.value?.items ?? [])
 const storageClassRows = computed(() => storageClasses.value?.items ?? [])
+const eventRows = computed(() => events.value)
 const nodeRows = computed(() => nodes.value?.items ?? [])
 const editableYAMLKinds = new Set<ResourceKind>([
   'deployment',
@@ -238,9 +269,12 @@ const editableYAMLKinds = new Set<ResourceKind>([
 const yamlEditable = computed(() => yamlKind.value !== '' && editableYAMLKinds.has(yamlKind.value))
 const activeTotal = computed(() => {
   if (activeGroup.value === 'pods') return pods.value?.total ?? 0
+  if (activeGroup.value === 'events') return events.value.length
   if (activeGroup.value === 'nodes') return nodes.value?.total ?? 0
   if (activeGroup.value === 'network') return activeNetwork.value === 'services' ? services.value?.total ?? 0 : ingresses.value?.total ?? 0
-  if (activeGroup.value === 'config') return configMaps.value?.total ?? 0
+  if (activeGroup.value === 'config') {
+    return activeConfig.value === 'secrets' ? secrets.value?.total ?? 0 : configMaps.value?.total ?? 0
+  }
   if (activeGroup.value === 'storage') {
     if (activeStorage.value === 'pvcs') return pvcs.value?.total ?? 0
     if (activeStorage.value === 'pvs') return pvs.value?.total ?? 0
@@ -351,6 +385,12 @@ function workloadUnavailable(row: DeploymentSummary | WorkloadSummary) {
   return Math.max(row.unavailable_replicas, 0)
 }
 
+function clearEventFilters() {
+  eventFilters.involved_kind = ''
+  eventFilters.involved_name = ''
+  void loadCurrent()
+}
+
 async function loadNamespaces() {
   const result = await listNamespaces()
   namespaces.value = result
@@ -368,6 +408,11 @@ async function loadCurrent() {
     const ns = namespace.value
     if (activeGroup.value === 'pods') {
       pods.value = await listPods(ns, 1, pageSize)
+    } else if (activeGroup.value === 'events') {
+      events.value = await listEvents(ns, {
+        involved_kind: eventFilters.involved_kind || undefined,
+        involved_name: eventFilters.involved_name || undefined
+      })
     } else if (activeGroup.value === 'nodes') {
       nodes.value = await listNodes(1, pageSize)
     } else if (activeGroup.value === 'network') {
@@ -377,7 +422,11 @@ async function loadCurrent() {
         ingresses.value = await listIngresses(ns, 1, pageSize)
       }
     } else if (activeGroup.value === 'config') {
-      configMaps.value = await listConfigMaps(ns, 1, pageSize)
+      if (activeConfig.value === 'secrets' && canReadSecrets.value) {
+        secrets.value = await listSecrets(ns, 1, pageSize)
+      } else {
+        configMaps.value = await listConfigMaps(ns, 1, pageSize)
+      }
     } else if (activeGroup.value === 'storage') {
       if (activeStorage.value === 'pvcs') {
         pvcs.value = await listPVCs(ns, 1, pageSize)
@@ -870,10 +919,66 @@ async function restartDaemonSetRow(row: DaemonSetSummary) {
   await loadCurrent()
 }
 
-watch([namespace, activeGroup, activeWorkload, activeNetwork, activeStorage], () => {
+async function showSecretDetail(row: SecretSummary) {
+  secretDetailVisible.value = true
+  secretDetailLoading.value = true
+  secretDetail.value = null
+  clearSecretValue()
+  try {
+    secretDetail.value = await getSecret(row.namespace, row.name)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'Secret 详情加载失败')
+  } finally {
+    secretDetailLoading.value = false
+  }
+}
+
+async function showSecretValue(key: string) {
+  const detail = secretDetail.value
+  if (!detail || !canReadSecretValues.value) return
+  await ElMessageBox.confirm(
+    `确认查看 Secret ${detail.namespace}/${detail.name} 的 key ${key} 明文？该操作会写入审计日志，请避免截屏、复制到日志或发送给无权限人员。`,
+    '高敏操作确认',
+    {
+      confirmButtonText: '确认查看',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  )
+  secretValueLoading.value = true
+  clearSecretValue()
+  try {
+    secretValue.value = await readSecretValue(detail.namespace, detail.name, key)
+    secretValueVisible.value = true
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'Secret 明文读取失败')
+  } finally {
+    secretValueLoading.value = false
+  }
+}
+
+function clearSecretValue() {
+  secretValueVisible.value = false
+  secretValue.value = null
+}
+
+watch([namespace, activeGroup, activeWorkload, activeNetwork, activeConfig, activeStorage], () => {
   if (initialized.value) {
     void loadCurrent()
   }
+})
+
+watch(canReadSecrets, (allowed) => {
+  if (allowed) return
+  activeConfig.value = 'configmaps'
+  secrets.value = null
+  secretDetailVisible.value = false
+  secretDetail.value = null
+  clearSecretValue()
+})
+
+watch(canReadSecretValues, (allowed) => {
+  if (!allowed) clearSecretValue()
 })
 
 watch(logMode, (mode) => {
@@ -1202,7 +1307,12 @@ onBeforeUnmount(stopRealtimeLogs)
     </section>
 
     <section v-else-if="activeGroup === 'config'" class="resource-section">
-      <el-table v-loading="loading" :data="configMapRows" border>
+      <div class="resource-subnav">
+        <el-segmented v-model="activeConfig" :options="configOptions" />
+        <span class="resource-count">page size {{ pageSize }}</span>
+      </div>
+
+      <el-table v-if="activeConfig === 'configmaps'" v-loading="loading" :data="configMapRows" border>
         <el-table-column prop="name" label="ConfigMap" min-width="220" show-overflow-tooltip />
         <el-table-column prop="key_count" label="Data" width="90" />
         <el-table-column prop="binary_data_count" label="Binary" width="90" />
@@ -1220,6 +1330,31 @@ onBeforeUnmount(stopRealtimeLogs)
           </template>
         </el-table-column>
       </el-table>
+
+      <template v-else>
+        <el-alert
+          class="detail-scope-alert"
+          type="warning"
+          :closable="false"
+          title="Secret 默认只展示类型、key 名和大小，不提供 YAML 导出。仅 Admin 可在二次确认后查看单个 key 明文，且操作会进入审计。"
+        />
+        <el-table v-loading="loading" :data="secretRows" border>
+          <el-table-column prop="name" label="Secret" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="type" label="类型" min-width="190" show-overflow-tooltip />
+          <el-table-column prop="key_count" label="Keys" width="90" />
+          <el-table-column label="Key 名称" min-width="320" show-overflow-tooltip>
+            <template #default="{ row }">{{ listText(row.keys) }}</template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="180">
+            <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="showSecretDetail(row)">安全详情</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
     </section>
 
     <section v-else-if="activeGroup === 'storage'" class="resource-section">
@@ -1300,6 +1435,48 @@ onBeforeUnmount(stopRealtimeLogs)
               <el-button :icon="View" circle @click="showYAML('storageclass', row.name)" />
             </el-tooltip>
           </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <section v-else-if="activeGroup === 'events'" class="resource-section">
+      <div class="resource-subnav">
+        <el-select v-model="eventFilters.involved_kind" clearable placeholder="资源类型" style="width: 180px">
+          <el-option label="Pod" value="Pod" />
+          <el-option label="Deployment" value="Deployment" />
+          <el-option label="StatefulSet" value="StatefulSet" />
+          <el-option label="DaemonSet" value="DaemonSet" />
+          <el-option label="ReplicaSet" value="ReplicaSet" />
+          <el-option label="Job" value="Job" />
+          <el-option label="CronJob" value="CronJob" />
+          <el-option label="Service" value="Service" />
+          <el-option label="Ingress" value="Ingress" />
+          <el-option label="PersistentVolumeClaim" value="PersistentVolumeClaim" />
+        </el-select>
+        <el-input v-model="eventFilters.involved_name" clearable placeholder="资源名称" style="width: 240px" />
+        <el-button type="primary" @click="loadCurrent">查询</el-button>
+        <el-button @click="clearEventFilters">重置</el-button>
+        <span class="resource-count">按最后发生时间倒序</span>
+      </div>
+      <el-alert
+        class="detail-scope-alert"
+        type="info"
+        :closable="false"
+        title="这里展示当前 Namespace 的 Kubernetes Event；事件聚合、去重、告警和 webhook 属于 P1。"
+      />
+      <el-table v-loading="loading" :data="eventRows" border empty-text="暂无 Event">
+        <el-table-column prop="type" label="类型" width="96">
+          <template #default="{ row }"><el-tag :type="row.type === 'Warning' ? 'danger' : 'info'">{{ row.type || '-' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="reason" label="Reason" min-width="160" show-overflow-tooltip />
+        <el-table-column label="资源" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">{{ `${row.involved_kind || '-'}/${row.involved_name || '-'}` }}</template>
+        </el-table-column>
+        <el-table-column prop="message" label="消息" min-width="360" show-overflow-tooltip />
+        <el-table-column prop="count" label="次数" width="80" />
+        <el-table-column prop="source" label="来源" min-width="150" show-overflow-tooltip />
+        <el-table-column label="最后发生" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.last_timestamp) }}</template>
         </el-table-column>
       </el-table>
     </section>
@@ -1420,6 +1597,69 @@ onBeforeUnmount(stopRealtimeLogs)
             <el-table-column label="最后发生" width="180"><template #default="{ row }">{{ formatDateTime(row.last_timestamp) }}</template></el-table-column>
           </el-table>
         </template>
+      </div>
+    </el-drawer>
+
+    <el-drawer
+      v-model="secretDetailVisible"
+      size="64%"
+      :title="secretDetail ? `Secret ${secretDetail.namespace}/${secretDetail.name}` : 'Secret 安全详情'"
+      @close="clearSecretValue"
+    >
+      <div v-loading="secretDetailLoading || secretValueLoading">
+        <el-alert
+          class="detail-scope-alert"
+          type="warning"
+          :closable="false"
+          title="本详情不包含 Secret 值。明文读取仅限 Admin，必须逐 key 二次确认，并通过独立 POST 接口记录审计。"
+        />
+        <el-descriptions v-if="secretDetail" :column="2" border>
+          <el-descriptions-item label="Namespace">{{ secretDetail.namespace }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ secretDetail.type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="Immutable">{{ secretDetail.immutable ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDateTime(secretDetail.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="Labels" :span="2">{{ mapText(secretDetail.labels) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <h3 v-if="secretDetail">Keys</h3>
+        <el-table v-if="secretDetail" :data="secretDetail.key_details" border empty-text="Secret 无数据 key">
+          <el-table-column prop="name" label="Key" min-width="260" show-overflow-tooltip />
+          <el-table-column prop="size_bytes" label="大小（bytes）" width="140" />
+          <el-table-column label="值" min-width="180">
+            <template #default>
+              <span class="masked-secret-value">••••••••</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="110">
+            <template #default="{ row }">
+              <el-button
+                v-if="canReadSecretValues"
+                link
+                type="danger"
+                :loading="secretValueLoading"
+                @click="showSecretValue(row.name)"
+              >
+                查看明文
+              </el-button>
+              <span v-else>仅 Admin</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-alert
+          v-if="secretValueVisible && secretValue"
+          class="secret-value-alert"
+          type="error"
+          :closable="false"
+          title="高敏明文已显示；关闭详情后会立即从页面状态清除。"
+        />
+        <el-descriptions v-if="secretValueVisible && secretValue" :column="1" border>
+          <el-descriptions-item label="Key">{{ secretValue.key }}</el-descriptions-item>
+          <el-descriptions-item label="编码">{{ secretValue.encoding }}</el-descriptions-item>
+          <el-descriptions-item label="值">
+            <pre class="secret-value-view">{{ secretValue.value }}</pre>
+          </el-descriptions-item>
+        </el-descriptions>
       </div>
     </el-drawer>
 

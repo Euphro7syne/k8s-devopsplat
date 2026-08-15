@@ -33,9 +33,16 @@ type CORSConfig struct {
 }
 
 type KubernetesConfig struct {
-	Mode       string `yaml:"mode"`
-	Kubeconfig string `yaml:"kubeconfig"`
-	Namespace  string `yaml:"namespace"`
+	Mode       string                `yaml:"mode"`
+	Kubeconfig string                `yaml:"kubeconfig"`
+	Namespace  string                `yaml:"namespace"`
+	Cache      KubernetesCacheConfig `yaml:"cache"`
+}
+
+type KubernetesCacheConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	ResyncPeriod time.Duration `yaml:"resync_period"`
+	SyncTimeout  time.Duration `yaml:"sync_timeout"`
 }
 
 type DatabaseConfig struct {
@@ -99,6 +106,11 @@ func Default() Config {
 			Mode:       "auto",
 			Kubeconfig: "~/.kube/config",
 			Namespace:  "ops-platform",
+			Cache: KubernetesCacheConfig{
+				Enabled:      true,
+				ResyncPeriod: 10 * time.Minute,
+				SyncTimeout:  15 * time.Second,
+			},
 		},
 		Database: DatabaseConfig{
 			Driver:       "sqlite",
@@ -214,6 +226,14 @@ func (c Config) Validate() error {
 	}
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database.dsn is required")
+	}
+	if c.Kubernetes.Cache.Enabled {
+		if c.Kubernetes.Cache.ResyncPeriod <= 0 {
+			return fmt.Errorf("kubernetes.cache.resync_period must be positive")
+		}
+		if c.Kubernetes.Cache.SyncTimeout <= 0 {
+			return fmt.Errorf("kubernetes.cache.sync_timeout must be positive")
+		}
 	}
 	if c.Auth.JWTIssuer == "" {
 		return fmt.Errorf("auth.jwt_issuer is required")

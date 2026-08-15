@@ -2,7 +2,9 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +20,133 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/yaml"
+
+	apperrors "ops-platform/internal/pkg/errors"
 )
+
+func TestSecretSafeReadDoesNotLeakValues(t *testing.T) {
+	immutable := true
+	client := fake.NewSimpleClientset(
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-secret",
+				Namespace: "demo",
+				Labels:    map[string]string{"app": "api"},
+			},
+			Type:      corev1.SecretTypeOpaque,
+			Immutable: &immutable,
+			Data: map[string][]byte{
+				"password": []byte("value-that-must-not-leak"),
+				"token":    []byte("second-value-that-must-not-leak"),
+			},
+		},
+	)
+	service := NewService(client, "test")
+
+	list, err := service.ListSecrets(context.Background(), "demo", ListOptions{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list secrets: %v", err)
+	}
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].KeyCount != 2 {
+		t.Fatalf("unexpected Secret list: %#v", list)
+	}
+	if strings.Join(list.Items[0].Keys, ",") != "password,token" {
+		t.Fatalf("expected sorted Secret keys, got %#v", list.Items[0].Keys)
+	}
+
+	detail, err := service.GetSecret(context.Background(), "demo", "app-secret")
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if !detail.Immutable || detail.Labels["app"] != "api" || len(detail.KeyDetails) != 2 {
+		t.Fatalf("unexpected Secret detail: %#v", detail)
+	}
+	if detail.KeyDetails[0].Name != "password" || detail.KeyDetails[0].SizeBytes != int64(len("value-that-must-not-leak")) {
+		t.Fatalf("unexpected Secret key metadata: %#v", detail.KeyDetails)
+	}
+
+	for name, value := range map[string]any{"list": list, "detail": detail} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal %s response: %v", name, err)
+		}
+		if strings.Contains(string(raw), "value-that-must-not-leak") || strings.Contains(string(raw), "second-value-that-must-not-leak") {
+			t.Fatalf("Secret value leaked in %s response: %s", name, raw)
+		}
+	}
+}
+
+func TestReadSecretValueReturnsOnlyRequestedKey(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-secret", Namespace: "demo"},
+		Data: map[string][]byte{
+			"password": []byte("requested-value"),
+			"token":    []byte("must-not-be-returned"),
+		},
+	})
+	service := NewService(client, "test")
+
+	result, err := service.ReadSecretValue(context.Background(), "demo", "app-secret", "password")
+	if err != nil {
+		t.Fatalf("read Secret value: %v", err)
+	}
+	if result.Value != "requested-value" || result.Encoding != "utf-8" || result.Key != "password" {
+		t.Fatalf("unexpected Secret value response: %#v", result)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal Secret value response: %v", err)
+	}
+	if strings.Contains(string(raw), "must-not-be-returned") {
+		t.Fatalf("unrequested Secret value leaked: %s", raw)
+	}
+}
+
+func TestReadSecretValueUsesBase64ForBinaryData(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "binary-secret", Namespace: "demo"},
+		Data:       map[string][]byte{"payload": {0xff, 0x00, 0x01}},
+	})
+	service := NewService(client, "test")
+
+	result, err := service.ReadSecretValue(context.Background(), "demo", "binary-secret", "payload")
+	if err != nil {
+		t.Fatalf("read binary Secret value: %v", err)
+	}
+	if result.Encoding != "base64" || result.Value != "/wAB" {
+		t.Fatalf("unexpected binary Secret value response: %#v", result)
+	}
+}
+
+func TestReadSecretValueRejectsMissingKey(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-secret", Namespace: "demo"},
+		Data:       map[string][]byte{"password": []byte("value")},
+	})
+	service := NewService(client, "test")
+
+	_, err := service.ReadSecretValue(context.Background(), "demo", "app-secret", "missing")
+	if err == nil {
+		t.Fatal("expected missing Secret key to return an error")
+	}
+	appErr := apperrors.From(err)
+	if appErr.Code != apperrors.CodeNotFound || appErr.HTTPStatus != http.StatusNotFound {
+		t.Fatalf("unexpected missing Secret key error: %#v", appErr)
+	}
+}
+
+func TestResourceYAMLRejectsSecret(t *testing.T) {
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-secret", Namespace: "demo"},
+		Data:       map[string][]byte{"password": []byte("must-not-leak")},
+	})
+	service := NewService(client, "test")
+
+	result, err := service.ResourceYAML(context.Background(), "secret", "demo", "app-secret")
+	if err == nil || result != "" {
+		t.Fatalf("expected generic Secret YAML export to remain disabled: result=%q err=%v", result, err)
+	}
+}
 
 func TestListPodsMarksAbnormalPod(t *testing.T) {
 	client := fake.NewSimpleClientset(

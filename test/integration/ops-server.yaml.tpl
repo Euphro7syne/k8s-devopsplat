@@ -23,6 +23,10 @@ kubernetes:
   mode: kubeconfig
   kubeconfig: "__KUBECONFIG__"
   namespace: ops-platform
+  cache:
+    enabled: true
+    resync_period: 10m
+    sync_timeout: 15s
 
 database:
   driver: sqlite

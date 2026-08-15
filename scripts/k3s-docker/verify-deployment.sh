@@ -3,6 +3,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-ops-platform}"
 VERIFY_PORT="${VERIFY_PORT:-18081}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}"
 
 kubectl -n "${NAMESPACE}" rollout status statefulset/ops-postgres --timeout=180s
 kubectl -n "${NAMESPACE}" rollout status deployment/ops-server --timeout=120s
@@ -36,18 +37,53 @@ cleanup() {
 trap cleanup EXIT
 
 health_response=""
-for _ in $(seq 1 20); do
+health_ready() {
+  [[ "${health_response}" == *'"status":"ok"'* ]] &&
+    [[ "${health_response}" == *'"database":"ok"'* ]] &&
+    [[ "${health_response}" == *'"kubernetes":"configured"'* ]] &&
+    [[ "${health_response}" == *'"resource_cache":"ready"'* ]]
+}
+
+for _ in $(seq 1 60); do
   if health_response="$(curl --fail --silent --show-error "http://127.0.0.1:${VERIFY_PORT}/api/v1/healthz" 2>/dev/null)"; then
-    break
+    if health_ready; then
+      break
+    fi
   fi
   sleep 1
 done
-if [[ -z "${health_response}" ]]; then
-  echo "ops-server health validation failed" >&2
+if ! health_ready; then
+  echo "ops-server health validation failed: expected database=ok, kubernetes=configured and resource_cache=ready" >&2
+  if [[ -n "${health_response}" ]]; then
+    echo "health response: ${health_response}" >&2
+  fi
   exit 1
+fi
+
+ingress_host="$(kubectl -n "${NAMESPACE}" get ingress ops-platform -o jsonpath='{.spec.rules[0].host}')"
+if [[ -n "${ingress_host}" ]]; then
+  echo "Ingress validation failed: expected a hostless public-IP rule, got host ${ingress_host}" >&2
+  exit 1
+fi
+
+if [[ -n "${PUBLIC_BASE_URL}" ]]; then
+  public_health="$(curl --fail --silent --show-error "${PUBLIC_BASE_URL%/}/api/v1/healthz")"
+  if [[ "${public_health}" != *'"database":"ok"'* ]] ||
+    [[ "${public_health}" != *'"kubernetes":"configured"'* ]] ||
+    [[ "${public_health}" != *'"resource_cache":"ready"'* ]]; then
+    echo "public Ingress health validation failed: ${public_health}" >&2
+    exit 1
+  fi
+  curl --fail --silent --show-error "${PUBLIC_BASE_URL%/}/" >/dev/null
 fi
 
 echo "PostgreSQL tables: ${table_count}/6"
 echo "Seed roles: ${role_count}/5"
 echo "ops-server health: ${health_response}"
+echo "Ingress hostless rule: passed"
+if [[ -n "${PUBLIC_BASE_URL}" ]]; then
+  echo "Public Ingress: ${PUBLIC_BASE_URL%/} passed"
+else
+  echo "Public Ingress reachability: skipped (set PUBLIC_BASE_URL=http://<public-ip>)"
+fi
 kubectl -n "${NAMESPACE}" get pods,pvc,service -o wide

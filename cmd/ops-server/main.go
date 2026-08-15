@@ -48,6 +48,7 @@ func main() {
 	}
 
 	app := server.New(cfg, store, log)
+	defer app.Close()
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Listen,
 		Handler:      app.Handler(),

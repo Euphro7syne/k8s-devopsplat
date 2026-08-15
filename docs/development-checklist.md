@@ -6,10 +6,10 @@
 
 ## 1. 当前结论
 
-- 当前总体阶段：**阶段 1 / P0 资源运维 MVP，进行中**。
+- 当前总体阶段：**阶段 1 / P0 资源运维 MVP，代码闭环完成，真实环境验收待执行**。
 - 阶段 0 工程骨架已经完成，本地构建与测试链路可用。
 - P0 已形成认证、RBAC、审计、Pod 诊断/日志和主要 Workload 操作主链路。
-- P0 的网络、存储、Namespace/Node 详情均已形成代码闭环并等待真实 k3s 验收；尚未完成的核心内容是 Secret 安全只读、informer/cache、统一 k3d/真实 k3s 验收和公网 Ingress 入口修复。
+- P0 的网络、存储、Namespace/Node 详情、Secret 安全只读、informer/cache + resource mapper、公网无 Host Ingress 和统一验收脚本均已形成代码闭环；当前剩余工作只是真实 k3d/k3s、PostgreSQL Pod 重建和公网入口验收。
 - P1 的配置中心、发布、Loki、监控/事件规则和 AI 诊断仍未正式开发；相关模块当前主要是空包或设计占位。
 - 多集群与指定 Pod 调度节点只保留扩展位，当前 MVP 不实施；未来接入多节点 k8s 时再正式启用。
 
@@ -28,7 +28,7 @@
 
 ### 阶段 1：P0 资源运维 MVP
 
-- [-] 当前开发阶段，详见第 3 节。
+- [-] 代码闭环完成，等待真实环境验收后正式关闭 P0，详见第 3 节。
 
 ### 阶段 2：P1 配置中心
 
@@ -191,7 +191,7 @@
 - [x] Ingress 默认后端、Host/Path/PathType、TLS 元数据和 Resource backend 详情。
 - [x] 后端 Service/端口存在性校验、Service 去重，以及 EndpointSlice/Endpoints/Pod/Event 和日志下钻。
 - [-] 最新代码的真实 k3s 验收。
-- [ ] 公网 IP `:80` 无 Host 访问规则；当前 Host-only Ingress 会由 Traefik 返回 404。
+- [x] 公网 IP `:80` 无 Host 访问规则已写入 k3s Ingress 清单，等待真实 Traefik/防火墙验收。
 
 #### PV / PVC / StorageClass
 
@@ -205,15 +205,15 @@
 
 - [x] ConfigMap 列表、Key 和 YAML 只读。
 - [x] ConfigMap 直接写入保持关闭，等待配置中心版本发布链路。
-- [ ] Secret 安全只读列表和受控明文读取。
-- [x] Secret Kubernetes RBAC 默认关闭。
+- [x] Secret 安全只读列表和受控单 key 明文读取；ConfigAdmin/Admin 看元数据，Admin `confirm=true` 明文并审计。
+- [x] Secret Kubernetes RBAC 仅开放 `get/list/watch`，写权限保持关闭。
 - [ ] Secret 写入；只能通过 P1 配置中心并受 Admin/ConfigAdmin 权限控制。
 
 #### Event
 
 - [x] Namespace Event 列表和 involved kind/name 过滤。
 - [x] Pod、Deployment、ReplicaSet、Job、CronJob、Service、Ingress、PVC 和 PV 详情关联 Event。
-- [ ] 独立事件页和更多资源详情联动。
+- [x] 资源页独立 Event 视图，支持按 involved kind/name 筛选。
 - [ ] 事件聚合、告警和 webhook；归入 P1。
 
 ### 3.4 Pod 日志
@@ -225,7 +225,7 @@
 - [x] JWT 通过 WebSocket 子协议传递，不进入 URL。
 - [x] REST/WebSocket 输出 sanitizer。
 - [x] 前端历史/实时双模式、开始/停止和 5000 行上限。
-- [-] 真实 k3s 日志、previous 和 WebSocket 验收。
+- [-] 当前/previous/WebSocket 已有 k3d 真实行为用例，其中 previous 通过容器真实重启生成并校验 sanitizer；测试尚未在当前机器实际运行。
 - [ ] 跨 Pod/轮转长期历史；归入 P1 Loki。
 
 ### 3.5 资源写操作安全
@@ -239,15 +239,20 @@
 
 ### 3.6 缓存、测试与部署
 
-- [ ] informer/cache 和资源关联 mapper；当前详情接口仍可能按 Namespace 直查多个资源。
+- [x] 非敏感 P0 资源 typed informer/cache 和 UID 安全资源关联 mapper；未同步时自动回退 API，Secret/YAML/写操作不进入缓存。
 - [x] 资源/Workload fake client 单测。
 - [x] k3d integration 测试框架与控制器行为测试代码。
+- [x] integration 启动后强制等待并断言 `resource_cache=ready`，不会只验证 API fallback。
+- [x] `previous=true` 真实容器重启 fixture、当前/实时日志和 sanitizer 集成用例。
+- [x] 服务器统一验收入口 `scripts/k3s-docker/verify-p0.sh`；破坏性的 PostgreSQL 重建和有前置状态的 MFA 检查默认跳过并要求显式开关。
+- [x] 部署验收强制检查数据库、Kubernetes client、Informer cache 与无 Host Ingress；设置 `PUBLIC_BASE_URL` 可验证公网 `/api/v1/healthz` 和首页。
+- [x] k3s Docker 打包拒绝已初始化的 `server-secret.yaml`，并排除 HANDOFF 文档，避免把真实凭据或代理上下文带入归档。
 - [x] `make test`、`make lint`、`make build` 本地门禁。
 - [x] OpenAPI、Kubernetes YAML 和 Shell 语法检查。
-- [-] Docker 镜像构建；因网络状况后置。
+- [-] Docker 镜像构建；当前执行机未安装 Docker，待具备容器运行时后执行。
 - [-] k3d 测试实际运行；当前只编译 integration 测试代码。
 - [-] 最新代码部署到服务器并完成真实 k3s 验收。
-- [ ] 公网 Ingress 无 Host/IP 访问方案实施和验收。
+- [-] 公网 Ingress 无 Host/IP 规则已实施，待真实 Traefik、云安全组和主机防火墙验收。
 
 ## 4. 当前固定开发顺序
 
@@ -258,10 +263,10 @@
 3. [x] **网络关联代码闭环**：Service→EndpointSlice/Endpoints→Pod 和 Ingress→Service→EndpointSlice/Endpoints→Pod/Event 已完成，等待真实 k3s 验收。
 4. [x] **存储关联代码闭环**：PVC/PV→Pod/Workload、容器挂载路径、双向绑定和 Event 已完成，等待真实 k3s 验收。
 5. [x] **Namespace/Node 详情代码闭环**：Conditions、污点、地址、资源声明统计、Pod/Workload/网络/存储关联和只读边界已完成，等待真实 k3s 验收。
-6. **Secret 安全只读**：下一项先设计角色、脱敏和审计边界，再开放最小 Kubernetes 权限。
-7. **informer/cache + resource mapper**：替换重复全量直查，保持现有 API 契约。
-8. **统一验收**：本地门禁、Docker、k3d、服务器、真实 k3s、PostgreSQL 持久性和 Pod 日志。
-9. **Ingress 公网入口**：单独实施无 Host/IP 规则或明确域名访问方案。
+6. [x] **Secret 安全只读**：ConfigAdmin/Admin 脱敏元数据、Admin 单 key 二次确认与审计、最小 Kubernetes 只读权限已完成，等待真实 k3s 验收。
+7. [x] **informer/cache + resource mapper**：非敏感只读资源已切换 typed Informer，控制器关联校验 UID，缓存失败自动回退，Secret 不缓存。
+8. [-] **统一验收**：本地门禁和验收代码已完成；Docker、k3d、服务器、真实 k3s、PostgreSQL 持久性和公网入口等待具备工具/环境后执行。
+9. [x] **Ingress 公网入口代码闭环**：默认清单已改为无 Host 路由，待真实公网入口验收。
 10. **进入 P1**：配置中心 → 发布执行器 → Loki → metrics/event 规则 → AI 规则诊断与受控修复。
 
 ## 5. 验收原则和已知边界
@@ -273,7 +278,7 @@
 - Deployment/StatefulSet/DaemonSet YAML 中 Pod template 变化会由 Kubernetes 自动 rollout，不应无条件额外重启。
 - StatefulSet/DaemonSet `OnDelete` 不会自动滚动替换 Pod，平台保持 409 安全边界。
 - CronJob 暂停只阻止未来调度，不停止已有 Job；恢复可能按 `startingDeadlineSeconds` 处理错过的调度。
-- 当前 Ingress 只匹配配置的 Host；直接使用公网 IP `:80` 会命中 Traefik 默认 404。
+- 默认 Ingress 已改为无 Host 路由；真实公网 IP `:80` 是否可达仍取决于 Traefik、云安全组和主机防火墙。
 - 不把真实服务器凭据、GitHub Token、JWT/TOTP/PostgreSQL 密钥写入代码、文档、脚本或 Git 历史。
 - 不引入微服务、Redis、消息队列、ELK/OpenSearch、Prometheus 全家桶或服务网格。
 
@@ -284,6 +289,7 @@
 - [x] `make test`
 - [x] `make lint`
 - [x] `make build`
+- [x] `go test -race ./internal/k8s ./internal/resources ./internal/server`
 - [x] integration 测试代码编译（未创建 k3d）
 - [x] OpenAPI YAML 解析
 - [x] k3s/test YAML 解析
@@ -291,3 +297,14 @@
 - [x] `git diff --check`
 
 Vite 仍有主包超过 500 kB 的非阻塞警告；不在当前 P0 核心资源任务中顺带重构。
+
+当前执行机未安装 `docker`、`kubectl` 或 `k3d`，因此未运行镜像构建、k3d 集成测试，也未连接服务器或真实 k3s。具备环境后按顺序执行：
+
+```bash
+make test-integration
+./scripts/k3s-docker/verify-p0.sh
+PUBLIC_BASE_URL=http://<公网-ip> ./scripts/k3s-docker/verify-deployment.sh
+VERIFY_POSTGRES_RESTART=true CONFIRM_RESTART=true ./scripts/k3s-docker/verify-p0.sh
+```
+
+MFA 用户完成绑定后，再以 `VERIFY_MFA_STORAGE=true` 运行统一脚本。所有步骤均不得输出真实 Secret。

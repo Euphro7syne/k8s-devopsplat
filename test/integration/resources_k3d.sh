@@ -113,6 +113,23 @@ if ! curl -fsS "${SERVER_URL}/api/v1/healthz" >/dev/null; then
   exit 1
 fi
 
+echo "waiting for Kubernetes informer cache"
+for _ in $(seq 1 60); do
+  if curl -fsS "${SERVER_URL}/api/v1/healthz" | grep -q '"resource_cache":"ready"'; then
+    break
+  fi
+  if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+    echo "ops-server exited before informer cache became ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+if ! curl -fsS "${SERVER_URL}/api/v1/healthz" | grep -q '"resource_cache":"ready"'; then
+  echo "Kubernetes informer cache did not become ready within 60 seconds" >&2
+  exit 1
+fi
+
 echo "running resource API integration tests"
 OPS_INTEGRATION_BASE_URL="${SERVER_URL}" \
 OPS_INTEGRATION_ADMIN_EMAIL="integration-admin@example.invalid" \
